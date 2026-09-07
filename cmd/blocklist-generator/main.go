@@ -34,8 +34,10 @@ func main() {
 		return
 	}
 
+	db := store.New(svc.Pool)
+
 	build := &builder.Builder{
-		DB:      store.New(svc.Pool),
+		DB:      db,
 		Store:   snaps,
 		Metrics: svc.Metrics,
 		Log:     svc.Log,
@@ -47,6 +49,9 @@ func main() {
 		Metrics:     svc.Metrics,
 		Log:         svc.Log,
 		CacheMaxAge: svc.Cfg.Public.CacheMaxAge,
+		// Đệm token là yêu cầu chịu lỗi, không phải tối ưu tốc độ: tra CSDL mỗi
+		// request nghĩa là sự cố PostgreSQL sẽ làm sập luôn việc phục vụ blocklist.
+		Tenants: store.NewTokenResolver(db, 5*time.Minute, time.Hour),
 	})
 
 	runCtx, stop := context.WithCancel(ctx)

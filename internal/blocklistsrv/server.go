@@ -10,6 +10,7 @@
 package blocklistsrv
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -30,12 +31,30 @@ import (
 // chấm kép, không có dấu gạch chéo, không có gì khác.
 var safeName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}\.txt$`)
 
+// safeToken giới hạn token trong path. Token do hệ sinh ra là chuỗi hex, nên bất cứ gì
+// khác đều là thăm dò.
+var safeToken = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
+
+// TenantResolver ánh xạ token trong URL sang slug tenant.
+//
+// Tách thành interface để tầng phục vụ không phải chạm PostgreSQL: cài đặt thật có
+// đệm, nên một sự cố CSDL không làm gián đoạn các URL đang phục vụ.
+type TenantResolver interface {
+	// Resolve trả về slug tenant. Token không hợp lệ hoặc đã thu hồi trả ErrUnknownToken.
+	Resolve(ctx context.Context, token string) (string, error)
+}
+
+// ErrUnknownToken báo token không tra được.
+var ErrUnknownToken = errors.New("token không hợp lệ")
+
 // Options cấu hình server.
 type Options struct {
 	Store       *snapshot.Store
 	Metrics     *metrics.Metrics
 	Log         *slog.Logger
 	CacheMaxAge time.Duration
+	// Tenants có thể nil; khi đó chỉ các URL của tenant mặc định hoạt động.
+	Tenants TenantResolver
 }
 
 // Server phục vụ blocklist.
@@ -44,6 +63,7 @@ type Server struct {
 	metrics     *metrics.Metrics
 	log         *slog.Logger
 	cacheMaxAge time.Duration
+	tenants     TenantResolver
 }
 
 // New dựng server.
@@ -59,14 +79,23 @@ func New(opt Options) *Server {
 		metrics:     opt.Metrics,
 		log:         opt.Log,
 		cacheMaxAge: opt.CacheMaxAge,
+		tenants:     opt.Tenants,
 	}
 }
 
 // Handler trả về bộ định tuyến công khai.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+
+	// Tenant mặc định: đúng các URL phẳng trong claude_rm.md.
 	mux.Handle("GET /blocklist/manifest.json", s.instrument("manifest", s.serveManifest))
-	mux.Handle("GET /blocklist/{name}", s.instrument("blocklist", s.serveList))
+	mux.Handle("GET /blocklist/{name}", s.instrument("blocklist", s.serveDefault))
+
+	// Tenant riêng. Token nằm trong path chứ không ở header vì cấu hình denylist của
+	// Blocky chỉ nhận một URL trần.
+	mux.Handle("GET /blocklist/{token}/{name}", s.instrument("blocklist_tenant", s.serveTenant))
+	mux.Handle("GET /allowlist/{token}/{name}", s.instrument("allowlist_tenant", s.serveTenant))
+
 	return mux
 }
 
@@ -87,13 +116,12 @@ func (s *Server) instrument(route string, h http.HandlerFunc) http.Handler {
 }
 
 func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request) {
-	path, err := s.store.Path("manifest.json")
+	m, err := s.store.Manifest()
 	if err != nil {
 		s.unavailable(w, err)
 		return
 	}
-
-	m, err := s.store.Manifest()
+	path, err := s.store.Path("manifest.json")
 	if err != nil {
 		s.unavailable(w, err)
 		return
@@ -106,26 +134,44 @@ func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request) {
 	s.serveFile(w, r, path)
 }
 
-func (s *Server) serveList(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+func (s *Server) serveDefault(w http.ResponseWriter, r *http.Request) {
+	s.serveList(w, r, "", r.PathValue("name"))
+}
+
+func (s *Server) serveTenant(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+	if !safeToken.MatchString(token) {
+		http.NotFound(w, r)
+		return
+	}
+	if s.tenants == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	slug, err := s.tenants.Resolve(r.Context(), token)
+	if err != nil {
+		// 404 chứ không phải 403: phản hồi khác nhau giữa "token sai" và "token đúng
+		// nhưng không có quyền" sẽ giúp người dò tìm biết token nào tồn tại.
+		http.NotFound(w, r)
+		return
+	}
+	s.serveList(w, r, slug, r.PathValue("name"))
+}
+
+func (s *Server) serveList(w http.ResponseWriter, r *http.Request, tenant, name string) {
 	if !safeName.MatchString(name) {
 		http.NotFound(w, r)
 		return
 	}
 
-	m, err := s.store.Manifest()
-	if err != nil {
-		s.unavailable(w, err)
-		return
-	}
-
-	entry, ok := m.Lists[name]
-	if !ok {
+	// Lookup tự đi theo con trỏ SameAs: file của tenant trùng nội dung với bản dùng
+	// chung thì không được ghi ra bản sao, chỉ có con trỏ.
+	ref, err := s.store.Lookup(tenant, name)
+	if errors.Is(err, snapshot.ErrNotInSet) {
 		http.NotFound(w, r)
 		return
 	}
-
-	base, err := s.store.Path(name)
 	if err != nil {
 		s.unavailable(w, err)
 		return
@@ -136,12 +182,12 @@ func (s *Server) serveList(w http.ResponseWriter, r *http.Request) {
 	// Nội dung khác nhau theo Accept-Encoding, nên cache trung gian phải biết điều đó.
 	w.Header().Set("Vary", "Accept-Encoding")
 
-	path := base
-	etag := entry.ETag
+	path := ref.Path
+	etag := ref.Entry.ETag
 
-	if entry.GzipBytes > 0 && acceptsGzip(r) {
-		if _, err := os.Stat(base + ".gz"); err == nil {
-			path = base + ".gz"
+	if acceptsGzip(r) {
+		if gz := ref.GzipPath(); fileExists(gz) {
+			path = gz
 			w.Header().Set("Content-Encoding", "gzip")
 			// ETag phải khác giữa hai biểu diễn của cùng một tài nguyên, nếu không
 			// cache trung gian có thể trả bản nén cho client không nhận gzip.
@@ -170,6 +216,11 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, path string) 
 	}
 
 	http.ServeContent(w, r, filepath.Base(path), st.ModTime(), f)
+}
+
+func fileExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.IsDir()
 }
 
 // unavailable trả 503 kèm log.

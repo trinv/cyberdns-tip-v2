@@ -34,6 +34,9 @@ const (
 
 	// gzipSuffix là đuôi của bản nén đặt cạnh mỗi file.
 	gzipSuffix = ".gz"
+
+	// tenantDir là thư mục con chứa file riêng của từng tenant.
+	tenantDir = "t"
 )
 
 // ErrNoCurrent báo chưa có bộ nào được phát hành.
@@ -66,6 +69,13 @@ type ListEntry struct {
 	Bytes   int64  `json:"bytes"`
 	// GzipBytes là kích thước bản nén phục vụ sẵn cạnh file gốc.
 	GzipBytes int64 `json:"gzip_bytes,omitempty"`
+
+	// SameAs trỏ tới một file khác trong cùng bộ khi nội dung trùng khớp hoàn toàn.
+	//
+	// Phần lớn tenant không có override nào, nên file của họ giống hệt bản dùng chung.
+	// Ghi ra N bản sao của một file 200 MB là lãng phí thuần túy; ở đây chỉ ghi con
+	// trỏ và để tầng phục vụ đọc file gốc.
+	SameAs string `json:"same_as,omitempty"`
 }
 
 // Manifest là nội dung manifest.json.
@@ -74,6 +84,15 @@ type Manifest struct {
 	GeneratedAt string               `json:"generated_at"`
 	Lists       map[string]ListEntry `json:"lists"`
 	Attribution []Attribution        `json:"attribution,omitempty"`
+
+	// Tenants chứa các bộ file riêng, khóa theo slug tenant. Tenant mặc định nằm ở
+	// Lists chứ không ở đây: các URL phẳng của claude_rm.md chính là tenant đó.
+	Tenants map[string]TenantLists `json:"tenants,omitempty"`
+}
+
+// TenantLists là bộ file của một tenant.
+type TenantLists struct {
+	Lists map[string]ListEntry `json:"lists"`
 }
 
 // Attribution ghi nhận nguồn và điều khoản license của nó. Bắt buộc có: hệ tái phát
@@ -92,8 +111,13 @@ type Set struct {
 	now     time.Time
 
 	lists       map[string]ListEntry
+	tenants     map[string]map[string]ListEntry
 	attribution []Attribution
 	committed   bool
+
+	// byChecksum ánh xạ checksum -> đường dẫn file đã ghi, để nội dung trùng nhau
+	// dùng chung một file trên đĩa.
+	byChecksum map[string]string
 }
 
 // Begin mở một bộ mới. Nội dung được ghi vào thư mục tạm cho tới khi Commit.
@@ -112,11 +136,13 @@ func (s *Store) Begin(version string, now time.Time) (*Set, error) {
 	}
 
 	return &Set{
-		store:   s,
-		version: version,
-		tmpDir:  tmpDir,
-		now:     now,
-		lists:   map[string]ListEntry{},
+		store:      s,
+		version:    version,
+		tmpDir:     tmpDir,
+		now:        now,
+		lists:      map[string]ListEntry{},
+		tenants:    map[string]map[string]ListEntry{},
+		byChecksum: map[string]string{},
 	}, nil
 }
 
@@ -126,10 +152,54 @@ func (set *Set) Version() string { return set.version }
 // Attribute ghi nhận một nguồn vào manifest.
 func (set *Set) Attribute(a Attribution) { set.attribution = append(set.attribution, a) }
 
-// Add ghi một file vào bộ. name là tên file, ví dụ "malware.txt".
+// Add ghi một file vào bộ cho tenant mặc định. name là tên file, ví dụ "malware.txt".
 func (set *Set) Add(name string, h render.Header, b render.Body) error {
-	if strings.ContainsAny(name, `/\`) {
-		return fmt.Errorf("snapshot: tên file không hợp lệ %q", name)
+	entry, err := set.write("", name, h, b)
+	if err != nil {
+		return err
+	}
+	set.lists[name] = entry
+	return nil
+}
+
+// AddTenant ghi một file vào bộ cho một tenant cụ thể.
+//
+// Nội dung trùng với một file đã ghi sẽ KHÔNG được ghi lại: mục manifest chỉ trỏ tới
+// file kia qua SameAs. Phần lớn tenant không có override nào nên file của họ giống hệt
+// bản dùng chung, và ghi ra N bản sao của một file 200 MB là lãng phí thuần túy.
+func (set *Set) AddTenant(slug, name string, h render.Header, b render.Body) error {
+	if !safeSegment(slug) {
+		return fmt.Errorf("snapshot: slug tenant không hợp lệ %q", slug)
+	}
+
+	entry, err := set.write(tenantDir+"/"+slug, name, h, b)
+	if err != nil {
+		return err
+	}
+	if set.tenants[slug] == nil {
+		set.tenants[slug] = map[string]ListEntry{}
+	}
+	set.tenants[slug][name] = entry
+	return nil
+}
+
+// write ghi một file (kèm bản nén) vào dir bên trong bộ đang dựng.
+func (set *Set) write(dir, name string, h render.Header, b render.Body) (ListEntry, error) {
+	if !safeSegment(name) {
+		return ListEntry{}, fmt.Errorf("snapshot: tên file không hợp lệ %q", name)
+	}
+
+	rel := name
+	if dir != "" {
+		rel = dir + "/" + name
+	}
+
+	// Nội dung y hệt một file đã ghi: chỉ trỏ tới nó.
+	if existing, ok := set.byChecksum[b.Checksum]; ok {
+		return ListEntry{
+			ETag: b.Checksum, Entries: b.Entries,
+			SameAs: existing,
+		}, nil
 	}
 
 	h.Version = set.version
@@ -137,41 +207,49 @@ func (set *Set) Add(name string, h render.Header, b render.Body) error {
 	h.Entries = b.Entries
 	h.Checksum = b.Checksum
 
-	path := filepath.Join(set.tmpDir, name)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	full := filepath.Join(set.tmpDir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return ListEntry{}, fmt.Errorf("snapshot: tạo thư mục cho %s: %w", rel, err)
+	}
+
+	f, err := os.OpenFile(full, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		return fmt.Errorf("snapshot: tạo %s: %w", name, err)
+		return ListEntry{}, fmt.Errorf("snapshot: tạo %s: %w", rel, err)
 	}
 
 	n, err := render.WriteTo(f, h, b)
 	if err != nil {
 		f.Close()
-		return fmt.Errorf("snapshot: ghi %s: %w", name, err)
+		return ListEntry{}, fmt.Errorf("snapshot: ghi %s: %w", rel, err)
 	}
 	// fsync trước khi coi là xong: đầy đĩa hoặc mất điện giữa chừng phải hỏng ở đây,
 	// không phải sau khi con trỏ current đã trỏ vào bộ này (xung đột E4).
 	if err := f.Sync(); err != nil {
 		f.Close()
-		return fmt.Errorf("snapshot: fsync %s: %w", name, err)
+		return ListEntry{}, fmt.Errorf("snapshot: fsync %s: %w", rel, err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("snapshot: đóng %s: %w", name, err)
+		return ListEntry{}, fmt.Errorf("snapshot: đóng %s: %w", rel, err)
 	}
 
-	gzBytes, err := set.writeGzip(name, h, b)
+	gzBytes, err := set.writeGzip(rel, h, b)
 	if err != nil {
-		return err
+		return ListEntry{}, err
 	}
+
+	set.byChecksum[b.Checksum] = rel
 
 	// ETag là hash NỘI DUNG, không phải version, nên rollback không làm ETag nhảy về
 	// một giá trị chưa client nào từng thấy (xung đột E3).
-	set.lists[name] = ListEntry{
-		ETag:      b.Checksum,
-		Entries:   b.Entries,
-		Bytes:     n,
-		GzipBytes: gzBytes,
-	}
-	return nil
+	return ListEntry{
+		ETag: b.Checksum, Entries: b.Entries, Bytes: n, GzipBytes: gzBytes,
+	}, nil
+}
+
+// safeSegment chặn dấu gạch chéo và đường dẫn tương đối trong tên do bên ngoài cung cấp.
+func safeSegment(s string) bool {
+	return s != "" && s != "." && s != ".." &&
+		!strings.ContainsAny(s, `/\`)
 }
 
 // writeGzip ghi thêm bản nén cạnh file gốc.
@@ -179,12 +257,13 @@ func (set *Set) Add(name string, h render.Header, b render.Body) error {
 // Nén sẵn lúc dựng chứ không nén theo từng request: all.txt ở mốc 10M domain cỡ
 // 200-250 MB, nén lại cho mỗi client là không khả thi. Dựng một lần rồi phục vụ nhiều
 // lần thì chi phí nằm đúng chỗ.
-func (set *Set) writeGzip(name string, h render.Header, b render.Body) (int64, error) {
-	path := filepath.Join(set.tmpDir, name+gzipSuffix)
+func (set *Set) writeGzip(rel string, h render.Header, b render.Body) (int64, error) {
+	name := rel + gzipSuffix
+	path := filepath.Join(set.tmpDir, filepath.FromSlash(name))
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		return 0, fmt.Errorf("snapshot: tạo %s: %w", name+gzipSuffix, err)
+		return 0, fmt.Errorf("snapshot: tạo %s: %w", name, err)
 	}
 	defer f.Close()
 
@@ -195,13 +274,13 @@ func (set *Set) writeGzip(name string, h render.Header, b render.Body) (int64, e
 	}
 
 	if _, err := render.WriteTo(zw, h, b); err != nil {
-		return 0, fmt.Errorf("snapshot: ghi %s: %w", name+gzipSuffix, err)
+		return 0, fmt.Errorf("snapshot: ghi %s: %w", name, err)
 	}
 	if err := zw.Close(); err != nil {
 		return 0, fmt.Errorf("snapshot: đóng gzip: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		return 0, fmt.Errorf("snapshot: fsync %s: %w", name+gzipSuffix, err)
+		return 0, fmt.Errorf("snapshot: fsync %s: %w", name, err)
 	}
 	return counter.n, nil
 }
@@ -231,6 +310,12 @@ func (set *Set) Commit() (Manifest, error) {
 		GeneratedAt: set.now.UTC().Format(time.RFC3339),
 		Lists:       set.lists,
 		Attribution: set.attribution,
+	}
+	if len(set.tenants) > 0 {
+		m.Tenants = make(map[string]TenantLists, len(set.tenants))
+		for slug, lists := range set.tenants {
+			m.Tenants[slug] = TenantLists{Lists: lists}
+		}
 	}
 
 	raw, err := json.MarshalIndent(m, "", "  ")
@@ -403,4 +488,65 @@ func NewVersion(now time.Time, digest string) string {
 		digest = digest[:8]
 	}
 	return now.UTC().Format("2006-01-02T15-04-05Z") + "-" + digest
+}
+
+// ErrNotInSet báo file không có trong bộ đang phát hành.
+var ErrNotInSet = errors.New("file không có trong bộ snapshot")
+
+// FileRef là kết quả tra cứu một file trong bộ đang phát hành.
+type FileRef struct {
+	// Path là đường dẫn tuyệt đối tới file .txt (đã đi theo SameAs nếu có).
+	Path  string
+	Entry ListEntry
+}
+
+// GzipPath là đường dẫn tới bản nén dựng sẵn.
+func (f FileRef) GzipPath() string { return f.Path + gzipSuffix }
+
+// Lookup tìm một file trong bộ đang phát hành. tenant rỗng nghĩa là tenant mặc định.
+//
+// Tự đi theo con trỏ SameAs, nên bên gọi không cần biết file của tenant có phải bản
+// dùng chung hay không.
+func (s *Store) Lookup(tenant, name string) (FileRef, error) {
+	m, err := s.Manifest()
+	if err != nil {
+		return FileRef{}, err
+	}
+	version, err := s.Current()
+	if err != nil {
+		return FileRef{}, err
+	}
+
+	var (
+		entry ListEntry
+		ok    bool
+		rel   string
+	)
+	if tenant == "" {
+		entry, ok = m.Lists[name]
+		rel = name
+	} else {
+		t, found := m.Tenants[tenant]
+		if found {
+			entry, ok = t.Lists[name]
+		}
+		rel = tenantDir + "/" + tenant + "/" + name
+	}
+	if !ok {
+		return FileRef{}, fmt.Errorf("%w: %s", ErrNotInSet, name)
+	}
+
+	if entry.SameAs != "" {
+		rel = entry.SameAs
+	}
+
+	// Chốt chặn cuối: đường dẫn phải nằm trong thư mục của bộ. SameAs đến từ manifest
+	// trên đĩa, và một file bị sửa tay không được biến thành đường thoát ra ngoài.
+	root := filepath.Join(s.root, version)
+	full := filepath.Join(root, filepath.FromSlash(rel))
+	if !strings.HasPrefix(full, root+string(filepath.Separator)) {
+		return FileRef{}, fmt.Errorf("%w: đường dẫn thoát khỏi bộ: %s", ErrNotInSet, rel)
+	}
+
+	return FileRef{Path: full, Entry: entry}, nil
 }

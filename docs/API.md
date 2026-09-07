@@ -38,9 +38,21 @@ Header trả về:
 
 Request có điều kiện (`If-None-Match`) trả `304 Not Modified`.
 
-### GET `/allowlist/{token}/default.txt`
+Tenant chỉ thấy các category họ đăng ký; category chưa đăng ký trả `404`. Token sai
+cũng trả `404` chứ không phải `403` — phân biệt hai trường hợp sẽ giúp người dò tìm
+biết token nào tồn tại.
+
+Thu hồi token có hiệu lực sau tối đa một chu kỳ đệm (mặc định 5 phút), hoặc tức thì khi
+admin API gọi `Invalidate`. Đệm token là yêu cầu chịu lỗi chứ không phải tối ưu tốc độ:
+tra CSDL cho mỗi request nghĩa là một sự cố PostgreSQL sẽ làm sập luôn việc phục vụ
+blocklist.
+
+### GET `/allowlist/{token}/allowlist.txt`
 
 Danh sách ngoại lệ của tenant, nạp vào cấu hình allowlist của Blocky.
+
+Luôn tồn tại kể cả khi rỗng: một URL lúc có lúc không sẽ làm Blocky báo lỗi nạp danh
+sách.
 
 Cần endpoint riêng vì file danh sách phẳng **không có cú pháp ngoại lệ**: khi
 `*.example.com` đang bị chặn mà tenant muốn cho phép `shop.example.com`, gỡ rule cha sẽ
