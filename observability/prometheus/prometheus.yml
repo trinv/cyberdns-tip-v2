@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: cyberdns-tip
+    static_configs:
+      - targets:
+          - feed-ingestor:9101
+          - policy-engine:9102
+          - blocklist-generator:9103
+          - admin-api:9104

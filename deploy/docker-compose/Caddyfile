@@ -1,0 +1,40 @@
+# Reverse proxy công khai cho CyberDNS TIP.
+#
+# Caddy tự xin và gia hạn chứng chỉ Let's Encrypt cho tip.cyberdns.vn. Điều kiện: bản
+# ghi A/AAAA của tên miền đã trỏ về máy này và cổng 80/443 mở ra Internet — cổng 80
+# cần cho thử thách ACME HTTP, đừng đóng nó.
+
+{
+	email {$ACME_EMAIL}
+}
+
+tip.cyberdns.vn {
+	log {
+		output stdout
+		format json
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# KHÔNG bật "encode gzip" ở đây.
+	#
+	# blocklist-generator đã dựng sẵn bản .gz cạnh mỗi file lúc build và tự trả về khi
+	# client chấp nhận gzip. Bật encode ở tầng proxy sẽ nén lại một nội dung đã nén cho
+	# từng request — với all.txt cỡ vài trăm MB thì đó là khoản CPU lãng phí lớn nhất
+	# mà cấu hình này có thể tạo ra.
+	reverse_proxy blocklist-generator:8080 {
+		# Client tải all.txt qua đường truyền chậm có thể cần nhiều phút; không cắt ngang.
+		transport http {
+			response_header_timeout 30s
+			read_timeout 30m
+		}
+	}
+}
+
+# Dashboard quản trị lên ở P3. Khi đó thêm một khối riêng cho admin.tip.cyberdns.vn
+# thay vì gắn vào cùng host: nó cần xác thực, còn blocklist thì công khai.

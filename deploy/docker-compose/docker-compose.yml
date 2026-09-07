@@ -1,0 +1,124 @@
+# Stack phát triển cục bộ cho CyberDNS TIP.
+#
+# Phạm vi P0-P3: PostgreSQL + 4 service Go + Prometheus/Grafana.
+# Stack OpenCTI (Elasticsearch, Redis, RabbitMQ, MinIO) chỉ vào ở P4 và nằm trong file
+# compose riêng — nó nặng hơn toàn bộ phần còn lại cộng lại.
+#
+#   docker compose up -d postgres
+#   docker compose run --rm feed-ingestor -migrate
+#   docker compose up -d
+
+name: cyberdns-tip
+
+x-service-base: &service-base
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+  environment: &service-env
+    TIP_ENV: dev
+    TIP_LOG_LEVEL: debug
+    TIP_DATABASE_DSN: postgres://tip:${POSTGRES_PASSWORD:-tip}@postgres:5432/tip?sslmode=disable
+    TIP_SNAPSHOT_ROOT: /var/lib/cyberdns-tip/snapshots
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: tip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tip}
+      POSTGRES_DB: tip
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tip -d tip"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  feed-ingestor:
+    <<: *service-base
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: feed-ingestor
+    command: ["-config", "/etc/cyberdns-tip/configs/feed-ingestor.yaml"]
+    environment:
+      <<: *service-env
+      TIP_OPS_ADDR: "0.0.0.0:9101"
+    volumes:
+      - snapshot-data:/var/lib/cyberdns-tip/snapshots
+
+  policy-engine:
+    <<: *service-base
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: policy-engine
+    command: ["-config", "/etc/cyberdns-tip/configs/policy-engine.yaml"]
+    environment:
+      <<: *service-env
+      TIP_OPS_ADDR: "0.0.0.0:9102"
+
+  blocklist-generator:
+    <<: *service-base
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: blocklist-generator
+    command: ["-config", "/etc/cyberdns-tip/configs/blocklist-generator.yaml"]
+    environment:
+      <<: *service-env
+      TIP_OPS_ADDR: "0.0.0.0:9103"
+    volumes:
+      - snapshot-data:/var/lib/cyberdns-tip/snapshots
+
+  admin-api:
+    <<: *service-base
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: admin-api
+    command: ["-config", "/etc/cyberdns-tip/configs/admin-api.yaml"]
+    environment:
+      <<: *service-env
+      TIP_OPS_ADDR: "0.0.0.0:9104"
+    ports:
+      - "127.0.0.1:9104:9104"
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ../../observability/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres-data:
+  prometheus-data:
+  grafana-data:
+  snapshot-data:

@@ -1,0 +1,26 @@
+service: blocklist-generator
+env: ${TIP_ENV:-dev}
+log_level: ${TIP_LOG_LEVEL:-info}
+
+database:
+  # Bí mật không bao giờ nằm trong file cấu hình (CLAUDE.md).
+  dsn: ${TIP_DATABASE_DSN}
+  max_conns: 8
+  connect_timeout: 10s
+
+ops:
+  # Cổng nội bộ. /healthz, /readyz, /metrics không bao giờ phơi ra tip.cyberdns.vn.
+  addr: ${TIP_OPS_ADDR:-127.0.0.1:9103}
+
+snapshot:
+  # Chứa snapshots/{version}/ và con trỏ current (kế hoạch §4.4).
+  root: ${TIP_SNAPSHOT_ROOT:-./data/snapshots}
+  # Số bộ cũ giữ lại để rollback.
+  keep: 5
+
+public:
+  # Trong container BẮT BUỘC bind 0.0.0.0: bind 127.0.0.1 thì reverse proxy ở
+  # container khác không với tới được.
+  addr: ${TIP_PUBLIC_ADDR:-0.0.0.0:8080}
+  base_url: ${TIP_PUBLIC_BASE_URL:-https://tip.cyberdns.vn}
+  cache_max_age: 5m

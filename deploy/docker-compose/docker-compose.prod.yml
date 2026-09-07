@@ -1,0 +1,155 @@
+# Triển khai production cho https://tip.cyberdns.vn
+#
+#   cp .env.example .env   # rồi điền bí mật vào
+#   docker compose -f docker-compose.prod.yml up -d postgres
+#   docker compose -f docker-compose.prod.yml run --rm feed-ingestor -migrate
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Nguyên tắc phơi cổng: CHỈ caddy mở ra Internet. PostgreSQL, các cổng vận hành,
+# Prometheus và Grafana đều nằm trong mạng nội bộ của compose và không publish cổng nào.
+# /metrics phơi cấu trúc nội bộ cùng số liệu vận hành nên không bao giờ được ra ngoài.
+
+name: cyberdns-tip
+
+x-service-base: &service-base
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+  environment: &service-env
+    TIP_ENV: production
+    TIP_LOG_LEVEL: ${TIP_LOG_LEVEL:-info}
+    TIP_DATABASE_DSN: postgres://tip:${POSTGRES_PASSWORD:?cần đặt POSTGRES_PASSWORD}@postgres:5432/tip?sslmode=disable
+    TIP_SNAPSHOT_ROOT: /var/lib/cyberdns-tip/snapshots
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+  # Container chỉ cần ghi vào volume snapshot; phần còn lại để chỉ đọc.
+  read_only: true
+  # Rootfs chỉ đọc nên vẫn cần một chỗ ghi tạm cho thư viện chuẩn.
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      # Cổng 80 bắt buộc mở: thử thách ACME HTTP của Let's Encrypt đi qua đó.
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?cần đặt ACME_EMAIL cho Let's Encrypt}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - blocklist-generator
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?cần đặt POSTGRES_PASSWORD}
+      POSTGRES_DB: tip
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tip -d tip"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Không publish cổng: chỉ các service trong mạng compose truy cập được.
+
+  feed-ingestor:
+    <<: *service-base
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: feed-ingestor
+        VERSION: ${VERSION:-dev}
+    command: ["-config", "/etc/cyberdns-tip/configs/feed-ingestor.yaml"]
+    environment:
+      <<: *service-env
+      TIP_OPS_ADDR: "0.0.0.0:9101"
+    volumes:
+      - snapshot-data:/var/lib/cyberdns-tip/snapshots
+
+  policy-engine:
+    <<: *service-base
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: policy-engine
+        VERSION: ${VERSION:-dev}
+    command: ["-config", "/etc/cyberdns-tip/configs/policy-engine.yaml"]
+    environment:
+      <<: *service-env
+      TIP_OPS_ADDR: "0.0.0.0:9102"
+
+  blocklist-generator:
+    <<: *service-base
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: blocklist-generator
+        VERSION: ${VERSION:-dev}
+    command: ["-config", "/etc/cyberdns-tip/configs/blocklist-generator.yaml"]
+    environment:
+      <<: *service-env
+      TIP_OPS_ADDR: "0.0.0.0:9103"
+      # Bind 0.0.0.0 chứ không phải 127.0.0.1: caddy nằm ở container khác.
+      TIP_PUBLIC_ADDR: "0.0.0.0:8080"
+      TIP_PUBLIC_BASE_URL: "https://tip.cyberdns.vn"
+    volumes:
+      - snapshot-data:/var/lib/cyberdns-tip/snapshots
+
+  admin-api:
+    <<: *service-base
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: admin-api
+        VERSION: ${VERSION:-dev}
+    command: ["-config", "/etc/cyberdns-tip/configs/admin-api.yaml"]
+    environment:
+      <<: *service-env
+      TIP_OPS_ADDR: "0.0.0.0:9104"
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=90d
+    volumes:
+      - ../../observability/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?cần đặt GRAFANA_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres-data:
+  prometheus-data:
+  grafana-data:
+  snapshot-data:
+  caddy-data:
+  caddy-config:

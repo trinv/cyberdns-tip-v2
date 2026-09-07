@@ -1,0 +1,21 @@
+# Kết quả build
+/bin/
+/out/
+*.exe
+
+# Dữ liệu chạy cục bộ
+/data/
+/snapshots/
+
+# Bí mật — DSN và token luôn đi qua biến môi trường, không bao giờ vào repo
+.env
+*.local.yaml
+
+# Công cụ
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Gói tài liệu gốc, đã được giải nén vào repo
+/threat-intel-dnsfirewall-claudecode.zip

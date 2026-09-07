@@ -1,0 +1,101 @@
+# Cảnh báo bám theo bảng observability §8.3 của báo cáo phương án và §7.3 của kế hoạch.
+#
+# Nguyên tắc chung: sự cố control plane KHÔNG phải sự cố DNS. Các cảnh báo dưới đây
+# đều là "dữ liệu đang cũ dần", không phải "dịch vụ đang chết" — vì snapshot đã publish
+# vẫn tiếp tục phục vụ. Mức severity phản ánh đúng điều đó.
+
+groups:
+  - name: feed-ingestor
+    rules:
+      - alert: FeedDown
+        # Nhờ Metrics.InitSource, cảnh báo này bắt được cả nguồn chưa từng chạy thành
+        # công lần nào — metric vector chưa có nhãn thì Prometheus không xuất ra.
+        expr: cyberdns_feed_up == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nguồn {{ $labels.source }} đang lỗi"
+
+      - alert: FeedStale
+        expr: time() - cyberdns_feed_last_success_timestamp_seconds > 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nguồn {{ $labels.source }} chưa import thành công trong 24h"
+
+      - alert: FeedParseErrorSpike
+        expr: rate(cyberdns_feed_parse_errors_total[15m]) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nguồn {{ $labels.source }} lỗi parse nhiều bất thường ({{ $labels.reason }})"
+
+  - name: policy
+    rules:
+      - alert: BlockRatioSpike
+        # Đảo chiều đột ngột tỉ lệ chặn thường là dấu hiệu một nguồn bị hỏng hoặc bị
+        # thao túng, không phải mối đe dọa thật tăng vọt.
+        expr: |
+          abs(
+            sum(rate(cyberdns_policy_decisions_total{action="BLOCK"}[1h]))
+            -
+            sum(rate(cyberdns_policy_decisions_total{action="BLOCK"}[1h] offset 1d))
+          ) > 0.5 * sum(rate(cyberdns_policy_decisions_total{action="BLOCK"}[1h] offset 1d))
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tỉ lệ BLOCK đổi hơn 50% so với cùng giờ hôm qua"
+
+  - name: generator
+    rules:
+      - alert: SnapshotStale
+        expr: cyberdns_snapshot_age_seconds > 21600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Snapshot của tenant {{ $labels.tenant }} đã cũ hơn 6 giờ"
+
+      - alert: SnapshotPublishFailing
+        expr: increase(cyberdns_snapshot_publishes_total{outcome="failed"}[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Publish snapshot thất bại; các URL vẫn phục vụ bản cũ"
+
+      - alert: SnapshotShrankSharply
+        # Snapshot teo đột ngột nghĩa là dữ liệu đang biến mất ở đâu đó phía trên.
+        expr: |
+          cyberdns_snapshot_entries
+            < 0.5 * (cyberdns_snapshot_entries offset 1d)
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.tenant }}/{{ $labels.category }} mất hơn nửa số dòng so với hôm qua"
+
+  - name: opencti-sync
+    rules:
+      - alert: OpenCTIStreamLag
+        # OpenCTI nằm trong đường sinh blocklist cho nhóm CTI, nên độ trễ stream là
+        # chỉ số vận hành chứ không chỉ là chỉ số phân tích.
+        expr: cyberdns_opencti_stream_lag_seconds > 900
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Live Stream OpenCTI trễ hơn 15 phút; thao tác của analyst chưa có hiệu lực"
+
+      - alert: OpenCTIReconcileDrift
+        # Kỳ vọng luôn bằng 0. Khác 0 thường là hệ quả của sự kiện merge xử lý sai
+        # hoặc consumer đã bỏ lỡ sự kiện khi vượt thời gian lưu của stream.
+        expr: cyberdns_opencti_reconcile_drift > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Đối soát GraphQL phát hiện {{ $value }} bản ghi lệch giữa OpenCTI và PostgreSQL"

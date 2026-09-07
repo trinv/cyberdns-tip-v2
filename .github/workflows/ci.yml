@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l ./cmd ./internal ./migrations)
+          if [ -n "$unformatted" ]; then
+            echo "Các file sau chưa gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go mod tidy không tạo thay đổi
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: tip
+          POSTGRES_PASSWORD: tip
+          POSTGRES_DB: tip_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tip -d tip_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Unit test
+        run: go test -race ./...
+
+      - name: Integration test (migration + ràng buộc lược đồ)
+        env:
+          TIP_TEST_DATABASE_DSN: postgres://tip:tip@localhost:5432/tip_test?sslmode=disable
+        run: go test -race -count=1 ./internal/db/...
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - feed-ingestor
+          - policy-engine
+          - blocklist-generator
+          - admin-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: go build -trimpath -o /dev/null ./cmd/${{ matrix.service }}
+
+  promtool:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Kiểm tra cấu hình và luật cảnh báo Prometheus
+        run: |
+          docker run --rm -v "$PWD/observability/prometheus:/etc/prometheus" \
+            --entrypoint promtool prom/prometheus:latest \
+            check rules /etc/prometheus/alerts.yml

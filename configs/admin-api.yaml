@@ -1,0 +1,19 @@
+service: admin-api
+env: ${TIP_ENV:-dev}
+log_level: ${TIP_LOG_LEVEL:-info}
+
+database:
+  # Bí mật không bao giờ nằm trong file cấu hình (CLAUDE.md).
+  dsn: ${TIP_DATABASE_DSN}
+  max_conns: 8
+  connect_timeout: 10s
+
+ops:
+  # Cổng nội bộ. /healthz, /readyz, /metrics không bao giờ phơi ra tip.cyberdns.vn.
+  addr: ${TIP_OPS_ADDR:-127.0.0.1:9104}
+
+snapshot:
+  # Chứa snapshots/{version}/ và con trỏ current (kế hoạch §4.4).
+  root: ${TIP_SNAPSHOT_ROOT:-./data/snapshots}
+  # Số bộ cũ giữ lại để rollback.
+  keep: 5
