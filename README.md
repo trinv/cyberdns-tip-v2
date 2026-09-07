@@ -91,31 +91,68 @@ TIP_TEST_DATABASE_DSN='postgres://tip:tip@localhost:5432/tip_test?sslmode=disabl
 
 ## Triển khai production
 
-Chỉ `caddy` mở ra Internet. PostgreSQL, các cổng vận hành, Prometheus và Grafana đều
-nằm trong mạng nội bộ của compose — `/metrics` phơi cấu trúc nội bộ nên không bao giờ
-được ra ngoài.
+TLS và reverse proxy do **nginx chạy trên host** (systemd) đảm nhiệm, không phải
+container. Chứng thư số nằm ở `/etc/letsencrypt` trên host nên tách hẳn khỏi vòng đời
+container: build lại hay xóa sạch stack cũng không đụng tới cert, và không có nguy cơ
+xin lại chứng thư rồi chạm trần rate limit của Let's Encrypt (5 lần cấp mỗi tuần cho
+một tên miền).
+
+Không container nào mở ra Internet. `blocklist-generator` chỉ ánh xạ cổng lên
+`127.0.0.1:8080` của host để nginx proxy tới; PostgreSQL, các cổng vận hành, Prometheus
+và Grafana không publish cổng nào.
+
+### 1. Xin chứng thư (làm một lần)
+
+Điều kiện: bản ghi A/AAAA của `tip.cyberdns.vn` đã trỏ về máy này và cổng 80 mở ra
+Internet — thử thách ACME HTTP đi qua đó.
+
+```sh
+sudo apt install nginx certbot
+sudo mkdir -p /var/www/certbot
+
+# nginx chưa có cấu hình cho tên miền này nên dừng nó ra để certbot tự nghe cổng 80.
+sudo systemctl stop nginx
+sudo certbot certonly --standalone -d tip.cyberdns.vn
+sudo systemctl start nginx
+```
+
+### 2. Cài cấu hình nginx
+
+```sh
+sudo cp deploy/nginx/tip.cyberdns.vn.conf /etc/nginx/sites-available/
+sudo ln -s /etc/nginx/sites-available/tip.cyberdns.vn.conf /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Cấu hình đã chừa sẵn `/.well-known/acme-challenge/` trên cổng 80, nên **các lần gia hạn
+sau không cần dừng nginx nữa**. Chuyển timer của certbot sang webroot để tận dụng:
+
+```sh
+sudo certbot certonly --webroot -w /var/www/certbot -d tip.cyberdns.vn --force-renewal
+sudo systemctl status certbot.timer      # gia hạn tự động, không downtime
+```
+
+### 3. Chạy stack
 
 ```sh
 cd deploy/docker-compose
-cp .env.example .env          # điền POSTGRES_PASSWORD, ACME_EMAIL, GRAFANA_PASSWORD
+cp .env.example .env          # điền POSTGRES_PASSWORD, GRAFANA_PASSWORD
 
 docker compose -f docker-compose.prod.yml up -d postgres
 docker compose -f docker-compose.prod.yml run --rm feed-ingestor -migrate
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-Điều kiện để Caddy xin được chứng chỉ: bản ghi A/AAAA của `tip.cyberdns.vn` đã trỏ về
-máy này, và **cổng 80 mở** — thử thách ACME HTTP đi qua đó, đóng nó thì không cấp được
-chứng chỉ.
+### Hai chỗ dễ vấp
 
-Hai lưu ý dễ vấp khi chạy trong container:
-
-- Cổng công khai phải bind `0.0.0.0`, không phải `127.0.0.1`. Mặc định trong file cấu
-  hình là loopback cho an toàn khi chạy trên máy trần; compose ghi đè qua
-  `TIP_PUBLIC_ADDR`.
-- Không bật `encode gzip` ở Caddy. `blocklist-generator` đã dựng sẵn bản `.gz` cạnh mỗi
-  file lúc build và tự trả về khi client chấp nhận gzip; nén lại ở tầng proxy là nén một
-  nội dung đã nén cho từng request.
+- **Đừng bật `gzip` ở nginx.** `blocklist-generator` đã dựng sẵn bản `.gz` cạnh mỗi file
+  lúc build snapshot và tự trả về khi client chấp nhận gzip. Bật gzip ở tầng proxy là
+  nén lại nội dung đã nén cho từng request; ngoài ra module gzip của nginx làm yếu ETag
+  (thêm tiền tố `W/`), phá mất cơ chế 304 mà Blocky dựa vào. Cấu hình mẫu đã đặt
+  `gzip off`.
+- **`proxy_buffering off` là bắt buộc, không phải tùy chọn.** Mặc định nginx đệm phản
+  hồi và ghi ra file tạm khi vượt 1 GB; với `all.txt` cỡ vài trăm MB thì mỗi request
+  thành một lượt ghi đĩa vô ích.
 
 ## Trạng thái
 

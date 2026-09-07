@@ -5,9 +5,14 @@
 #   docker compose -f docker-compose.prod.yml run --rm feed-ingestor -migrate
 #   docker compose -f docker-compose.prod.yml up -d
 #
-# Nguyên tắc phơi cổng: CHỈ caddy mở ra Internet. PostgreSQL, các cổng vận hành,
-# Prometheus và Grafana đều nằm trong mạng nội bộ của compose và không publish cổng nào.
-# /metrics phơi cấu trúc nội bộ cùng số liệu vận hành nên không bao giờ được ra ngoài.
+# TLS và reverse proxy do nginx TRÊN HOST đảm nhiệm (systemd), không phải container:
+# chứng thư số ở /etc/letsencrypt tách hẳn khỏi vòng đời container, nên build lại stack
+# không đụng tới cert. Xem deploy/nginx/tip.cyberdns.vn.conf.
+#
+# Nguyên tắc phơi cổng: KHÔNG container nào mở ra Internet. blocklist-generator chỉ
+# publish lên 127.0.0.1 của host để nginx proxy tới. PostgreSQL, các cổng vận hành,
+# Prometheus và Grafana không publish cổng nào — /metrics phơi cấu trúc nội bộ cùng số
+# liệu vận hành nên không bao giờ được ra ngoài.
 
 name: cyberdns-tip
 
@@ -33,23 +38,6 @@ x-service-base: &service-base
     - no-new-privileges:true
 
 services:
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    ports:
-      # Cổng 80 bắt buộc mở: thử thách ACME HTTP của Let's Encrypt đi qua đó.
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    environment:
-      ACME_EMAIL: ${ACME_EMAIL:?cần đặt ACME_EMAIL cho Let's Encrypt}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      - blocklist-generator
-
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
@@ -106,9 +94,14 @@ services:
     environment:
       <<: *service-env
       TIP_OPS_ADDR: "0.0.0.0:9103"
-      # Bind 0.0.0.0 chứ không phải 127.0.0.1: caddy nằm ở container khác.
+      # Bind 0.0.0.0 BÊN TRONG container; ánh xạ ra ngoài chỉ tới 127.0.0.1 của
+      # host (xem mục ports bên dưới). Bind loopback trong container thì phép ánh
+      # xạ cổng của Docker không với tới được.
       TIP_PUBLIC_ADDR: "0.0.0.0:8080"
       TIP_PUBLIC_BASE_URL: "https://tip.cyberdns.vn"
+    ports:
+      # Chỉ lên loopback của host. nginx trên host proxy tới đây; không ra Internet.
+      - "127.0.0.1:8080:8080"
     volumes:
       - snapshot-data:/var/lib/cyberdns-tip/snapshots
 
@@ -151,5 +144,3 @@ volumes:
   prometheus-data:
   grafana-data:
   snapshot-data:
-  caddy-data:
-  caddy-config:
