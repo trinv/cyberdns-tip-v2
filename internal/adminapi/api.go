@@ -38,6 +38,12 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/allowlist", a.authenticated("allowlist:write", a.handleAddAllowlist))
 	mux.HandleFunc("DELETE /api/allowlist/{id}", a.authenticated("allowlist:write", a.handleDeleteAllowlist))
 
+	// Giao diện nhận mọi đường dẫn còn lại. Đăng ký sau các route /api/ nên ServeMux
+	// vẫn ưu tiên chúng: mẫu cụ thể hơn luôn thắng mẫu "/".
+	if a.UI != nil {
+		mux.Handle("/", a.UI)
+	}
+
 	return mux
 }
 

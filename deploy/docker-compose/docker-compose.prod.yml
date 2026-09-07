@@ -117,6 +117,12 @@ services:
     environment:
       <<: *service-env
       TIP_OPS_ADDR: "0.0.0.0:9104"
+      TIP_ADMIN_ADDR: "0.0.0.0:8090"
+    ports:
+      # Chỉ loopback của host. Dashboard cho phép đổi chính sách chặn nên KHÔNG bao
+      # giờ ra Internet: truy cập qua SSH tunnel, hoặc thêm một vhost nginx nội bộ có
+      # giới hạn IP.
+      - "127.0.0.1:8090:8090"
 
   prometheus:
     image: prom/prometheus:latest

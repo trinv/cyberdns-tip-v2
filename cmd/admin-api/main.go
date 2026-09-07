@@ -24,6 +24,7 @@ import (
 	"github.com/vnnic/cyberdns-tip/internal/adminapi"
 	"github.com/vnnic/cyberdns-tip/internal/app"
 	"github.com/vnnic/cyberdns-tip/internal/store"
+	"github.com/vnnic/cyberdns-tip/web"
 )
 
 func main() {
@@ -52,6 +53,7 @@ func main() {
 	api := &adminapi.API{
 		DB:  db,
 		Log: svc.Log,
+		UI:  web.Handler(),
 		// Cookie chỉ đặt cờ Secure khi chạy sau HTTPS. Bật ở dev sẽ khiến trình duyệt
 		// bỏ cookie và không ai đăng nhập được, mà lỗi thì không hiện ra ở đâu.
 		Secure: svc.Cfg.Env == "production",

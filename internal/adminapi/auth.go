@@ -40,6 +40,8 @@ type API struct {
 	// OnRevokeTenantToken được gọi sau khi thu hồi token tenant, để bộ tra token xóa
 	// đệm ngay thay vì chờ hết TTL.
 	OnRevokeTenantToken func(raw string)
+	// UI phục vụ giao diện quản trị. Nil thì service chỉ có API.
+	UI http.Handler
 }
 
 // userOf lấy tài khoản đã xác thực khỏi context.

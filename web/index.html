@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="vi" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Bảng quản trị nội bộ: không cho công cụ tìm kiếm lập chỉ mục. -->
+<meta name="robots" content="noindex, nofollow">
+<title>CyberDNS TIP</title>
+<link rel="stylesheet" href="/app.css">
+<script>
+  // Đặt theme trước lần vẽ đầu tiên để không nháy trắng khi đang ở chế độ tối.
+  try {
+    const saved = localStorage.getItem("tip-theme");
+    const dark = saved ? saved === "dark"
+      : matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+  } catch (e) { /* trình duyệt chặn storage: giữ nguyên theme sáng */ }
+</script>
+</head>
+<body>
+
+<!-- ------------------------------------------------------------ đăng nhập -->
+<div id="login" class="login-wrap hidden">
+  <form class="login-card" id="login-form">
+    <h1>CyberDNS TIP</h1>
+    <p class="sub">Threat Intelligence Platform</p>
+
+    <div id="login-error" class="banner bad hidden"></div>
+
+    <div class="field">
+      <label for="email">Email</label>
+      <input type="email" id="email" autocomplete="username" required autofocus>
+    </div>
+    <div class="field">
+      <label for="password">Mật khẩu</label>
+      <input type="password" id="password" autocomplete="current-password" required>
+    </div>
+
+    <button class="btn primary" type="submit" style="width:100%; justify-content:center">
+      Đăng nhập
+    </button>
+  </form>
+</div>
+
+<!-- ------------------------------------------------------------ khung chính -->
+<div id="app" class="shell hidden">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo">TIP</div>
+      <div>
+        <div class="brand-name">CyberDNS</div>
+        <div class="brand-sub">Threat Intel</div>
+      </div>
+    </div>
+
+    <div class="nav-eyebrow">Vận hành</div>
+    <nav id="nav"></nav>
+
+    <div class="nav-eyebrow">Tài khoản</div>
+    <button class="nav-link" id="theme-toggle">
+      <svg viewBox="0 0 24 24"><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.36 6.36l-.71-.71M6.34 6.34l-.7-.7m12.72 0l-.71.7M6.34 17.66l-.7.7"/><circle cx="12" cy="12" r="4"/></svg>
+      <span>Đổi giao diện</span>
+    </button>
+    <button class="nav-link" id="logout">
+      <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4m7 14l5-5-5-5m5 5H9"/></svg>
+      <span>Đăng xuất</span>
+    </button>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="btn sm nav-toggle" id="nav-toggle" aria-label="Mở menu">☰</button>
+      <h1 id="page-title">Tổng quan</h1>
+      <span class="chip neutral" id="whoami"></span>
+    </header>
+
+    <main class="content" id="view"></main>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toasts"></div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>
