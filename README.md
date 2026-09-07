@@ -174,6 +174,25 @@ docker compose -f docker-compose.prod.yml up -d
   hồi và ghi ra file tạm khi vượt 1 GB; với `all.txt` cỡ vài trăm MB thì mỗi request
   thành một lượt ghi đĩa vô ích.
 
+## OpenCTI
+
+Tầng Threat Intelligence chạy bằng một compose riêng, dựa trên
+[OpenCTI-Platform/docker](https://github.com/OpenCTI-Platform/docker):
+
+```sh
+sudo ./deploy/install-opencti.sh
+```
+
+Giao diện chỉ lắng nghe trên `127.0.0.1:8081` của máy chủ, **không ra Internet** — truy
+cập qua `ssh -L 8081:127.0.0.1:8081 user@may-chu`. Cần tối thiểu 16 GB RAM (32 GB để
+thoải mái) ngoài phần stack chính đang dùng.
+
+**OpenCTI hiện chưa nối vào đường sinh blocklist.** Nó chạy và dùng được giao diện,
+nhưng `opencti-connector` và `sync-consumer` — hai thành phần nối nó với PostgreSQL —
+thuộc P4 và chưa được viết.
+
+Chi tiết tài nguyên, truy cập, sao lưu và nâng cấp: [deploy/opencti/README.md](deploy/opencti/README.md).
+
 ## Trạng thái
 
 **P0 hoàn tất** — khung repo, lược đồ đầy đủ L0–L3, cấu hình, metrics, CI, compose.
