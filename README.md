@@ -101,6 +101,26 @@ Không container nào mở ra Internet. `blocklist-generator` chỉ ánh xạ c�
 `127.0.0.1:8080` của host để nginx proxy tới; PostgreSQL, các cổng vận hành, Prometheus
 và Grafana không publish cổng nào.
 
+### Cách nhanh: script tự động
+
+```sh
+# Chạy thử trước bằng máy chủ thử nghiệm của Let's Encrypt — không tính vào hạn mức.
+sudo ./deploy/install.sh --email admin@vnnic.vn --staging
+
+# Thật:
+sudo ./deploy/install.sh --email admin@vnnic.vn
+```
+
+Script làm trọn: cài nginx/certbot, kiểm tra DNS, xin chứng thư, cài cấu hình nginx,
+chuyển gia hạn sang webroot, sinh `.env`, chạy migration, khởi động stack, rồi xác minh.
+
+Chạy lại được nhiều lần — mỗi bước tự kiểm tra trạng thái trước khi làm. Hai thứ script
+**không bao giờ** đụng vào: `.env` đã tồn tại (ghi đè là đổi `POSTGRES_PASSWORD`, và
+volume dữ liệu cũ sẽ không mở được nữa) và chứng thư còn hơn 30 ngày (Let's Encrypt chỉ
+cho 5 lần cấp mỗi tuần).
+
+Các bước thủ công tương đương ở dưới, dùng khi cần kiểm soát từng bước.
+
 ### 1. Xin chứng thư (làm một lần)
 
 Điều kiện: bản ghi A/AAAA của `tip.cyberdns.vn` đã trỏ về máy này và cổng 80 mở ra
