@@ -61,10 +61,12 @@ jobs:
       - name: Unit test
         run: go test -race ./...
 
-      - name: Integration test (migration + ràng buộc lược đồ)
+      # Chạy TOÀN BỘ test tích hợp, không riêng ./internal/db. Máy phát triển không
+      # có PostgreSQL nên đây là nơi duy nhất tầng lưu trữ được chạy thật.
+      - name: Integration test (migration, lược đồ, tầng lưu trữ)
         env:
           TIP_TEST_DATABASE_DSN: postgres://tip:tip@localhost:5432/tip_test?sslmode=disable
-        run: go test -race -count=1 ./internal/db/...
+        run: go test -race -count=1 ./...
 
   build:
     runs-on: ubuntu-latest
