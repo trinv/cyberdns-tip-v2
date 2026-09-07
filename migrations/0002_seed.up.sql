@@ -25,9 +25,13 @@ INSERT INTO tenant_categories (tenant_id, category_id, enabled)
 SELECT t.id, c.id, TRUE FROM tenants t CROSS JOIN categories c WHERE t.slug = 'public'
 ON CONFLICT (tenant_id, category_id) DO NOTHING;
 
+-- Quyền "protected:write" cố tình nằm NGOÀI phạm vi "allowlist:": operator có
+-- "allowlist:*", và theo đúng ngữ nghĩa wildcard thì dấu sao phải phủ mọi thứ bên dưới
+-- nó. Đặt một quyền cao hơn vào bên trong phạm vi mà vai trò thấp đã nắm là cách tạo ra
+-- một lỗ phân quyền không ai nhìn thấy khi đọc bảng này.
 INSERT INTO admin_roles (name, permissions) VALUES
   ('owner',    '["*"]'),
-  ('operator', '["source:*", "import:*", "allowlist:*", "snapshot:read", "domain:read"]'),
+  ('operator', '["source:*", "import:*", "allowlist:*", "tenant:*", "snapshot:read", "domain:read"]'),
   ('viewer',   '["source:read", "import:read", "snapshot:read", "domain:read"]')
 ON CONFLICT (name) DO NOTHING;
 

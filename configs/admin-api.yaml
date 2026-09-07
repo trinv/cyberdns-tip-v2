@@ -17,3 +17,9 @@ snapshot:
   root: ${TIP_SNAPSHOT_ROOT:-./data/snapshots}
   # Số bộ cũ giữ lại để rollback.
   keep: 5
+
+public:
+  # Dashboard KHÔNG bao giờ phơi thẳng ra Internet: nó cho phép đổi chính sách chặn.
+  # Đặt sau reverse proxy nội bộ có giới hạn IP, hoặc truy cập qua SSH tunnel.
+  addr: ${TIP_ADMIN_ADDR:-127.0.0.1:8090}
+  base_url: ${TIP_ADMIN_BASE_URL:-http://localhost:8090}
