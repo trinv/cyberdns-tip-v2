@@ -203,7 +203,7 @@ func TestWriteTo(t *testing.T) {
 	n, err := WriteTo(&buf, Header{
 		Version:     "2026-09-07T03-00Z-abc123",
 		GeneratedAt: "2026-09-07T03:00:00Z",
-		Category:    "malware",
+
 		Entries:     body.Entries,
 		Checksum:    body.Checksum,
 		Attribution: []string{"hagezi-tif (GPL-3.0)"},
@@ -218,7 +218,7 @@ func TestWriteTo(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"# Category: malware",
+
 		"# Version: 2026-09-07T03-00Z-abc123",
 		"# Checksum: " + body.Checksum,
 		"# Source: hagezi-tif (GPL-3.0)",

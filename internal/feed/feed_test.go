@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/vnnic/cyberdns-tip/internal/domainname"
-	"github.com/vnnic/cyberdns-tip/internal/psl"
 )
 
 func testFetcher() *Fetcher {
@@ -281,23 +280,63 @@ func TestRejectRatioExcludesSkippedLines(t *testing.T) {
 	}
 }
 
-// Xung đột A8. Một dòng "com" là dấu hiệu nguồn hỏng hoặc bị can thiệp, và fail-closed
-// nghĩa là hỏng trọn lần import chứ không chỉ bỏ qua dòng đó.
-func TestParseFailsHardOnPublicSuffix(t *testing.T) {
-	for _, bad := range []string{"com", "vn", "com.vn", "co.uk"} {
+// Xung đột A8, đã hiệu chỉnh sau khi chạy trên feed thật.
+//
+// TLD trần là dấu hiệu hỏng không thể nhầm: không feed hợp lệ nào chặn nguyên một TLD.
+// Trường hợp này vẫn làm hỏng cả lần import.
+func TestBareTLDFailsWholeImport(t *testing.T) {
+	for _, bad := range []string{"com", "vn", "net"} {
 		t.Run(bad, func(t *testing.T) {
-			input := "good.example.com\n" + bad + "\nother.example.com\n"
-
-			_, _, err := collect(t, input)
-			if err == nil {
-				t.Fatalf("Parse chấp nhận %q, muốn hỏng cả lần import", bad)
-			}
-
-			var tooBroad *psl.ErrTooBroad
-			if !errors.As(err, &tooBroad) {
-				t.Errorf("lỗi = %v (%T), muốn *psl.ErrTooBroad", err, err)
+			_, _, err := collect(t, "good.example.com\n"+bad+"\nother.example.com\n")
+			if !errors.Is(err, ErrBareTLD) {
+				t.Errorf("Parse = %v, muốn ErrBareTLD", err)
 			}
 		})
+	}
+}
+
+// Public suffix NHIỀU NHÃN thì chỉ bỏ dòng và đếm lại.
+//
+// Feed thật có chứa chúng một cách chủ ý: HaGeZi TIF có đúng 3 dòng như vậy trên
+// 2,15 triệu (5g.in, 6g.in, firm.in). Vứt bỏ 2,15 triệu domain vì 3 dòng là đánh đổi
+// sai; nhưng áp dụng chúng thì chặn cả một public suffix. Nên: bỏ qua, đếm, và đưa lên
+// cho người duyệt.
+func TestMultiLabelPublicSuffixIsSkippedNotFatal(t *testing.T) {
+	rules, st, err := collect(t,
+		"good.example.com\n*.5g.in\nco.uk\nother.example.net\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if st.PublicSuffix != 2 {
+		t.Errorf("PublicSuffix = %d, muốn 2", st.PublicSuffix)
+	}
+	if st.Accepted != 2 {
+		t.Errorf("Accepted = %d, muốn 2 (%v)", st.Accepted, rules)
+	}
+	for _, r := range rules {
+		if r.Domain == "5g.in" || r.Domain == "co.uk" {
+			t.Errorf("rule public suffix %q vẫn lọt vào kết quả", r.Domain)
+		}
+	}
+	if len(st.PublicSuffixSamples) == 0 {
+		t.Error("không giữ mẫu nào để người vận hành duyệt")
+	}
+}
+
+// Nhiều rule public suffix nghĩa là feed hỏng hoặc bị can thiệp, không phải chủ ý.
+func TestTooManyPublicSuffixesFailsImport(t *testing.T) {
+	src := Source{MaxPublicSuffix: 2}
+
+	if err := Validate(src, Stats{Accepted: 100, PublicSuffix: 2}, 0); err != nil {
+		t.Errorf("Validate = %v, muốn nil ở đúng ngưỡng", err)
+	}
+	err := Validate(src, Stats{
+		Accepted: 100, PublicSuffix: 3,
+		PublicSuffixSamples: []string{"5g.in", "co.uk", "com.au"},
+	}, 0)
+	if !errors.Is(err, ErrTooManyBroad) {
+		t.Errorf("Validate = %v, muốn ErrTooManyBroad", err)
 	}
 }
 

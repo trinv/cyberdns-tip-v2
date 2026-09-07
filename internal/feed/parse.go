@@ -19,6 +19,8 @@ const maxLineBytes = 1 << 20
 
 var (
 	ErrEmptyFeed       = errors.New("feed không có bản ghi hợp lệ nào")
+	ErrTooManyBroad    = errors.New("quá nhiều rule public suffix")
+	ErrBareTLD         = errors.New("feed chứa một TLD trần")
 	ErrTooManyRejects  = errors.New("tỉ lệ dòng lỗi vượt ngưỡng")
 	ErrChangeTooLarge  = errors.New("số bản ghi biến động vượt ngưỡng")
 	ErrNotLineOriented = errors.New("nội dung không phải danh sách theo dòng")
@@ -31,7 +33,25 @@ type Stats struct {
 	Accepted int
 	Rejected int
 
+	// PublicSuffix là số rule trùng đúng một public suffix, đã bị bỏ qua.
+	//
+	// Không bao giờ được áp dụng tự động, nhưng cũng không làm hỏng cả lần import khi
+	// số lượng còn nhỏ: feed thật có vài dòng như vậy một cách chủ ý.
+	PublicSuffix int
+	// PublicSuffixSamples là mẫu để người vận hành duyệt, giới hạn số lượng.
+	PublicSuffixSamples []string
+
 	RejectReasons map[string]int
+}
+
+// maxBroadSamples giới hạn số mẫu giữ lại; audit chỉ cần vài cái để người duyệt hiểu.
+const maxBroadSamples = 20
+
+func (s *Stats) noteBroad(domain string) {
+	s.PublicSuffix++
+	if len(s.PublicSuffixSamples) < maxBroadSamples {
+		s.PublicSuffixSamples = append(s.PublicSuffixSamples, domain)
+	}
 }
 
 // RejectRatio là tỉ lệ dòng lỗi trên tổng số dòng có nội dung.
@@ -110,8 +130,15 @@ func Parse(r io.Reader, sink Sink) (Stats, error) {
 			// nên nếu không kiểm tra ở đây thì dòng nguy hiểm nhất có thể có trong một
 			// feed lại lọt qua như một lỗi vặt, trong khi "com.vn" hai nhãn thì làm
 			// hỏng cả lần import. Không thể để hai trường hợp đó xử lý khác nhau.
-			if broad := publicSuffixIn(line); broad != nil {
-				return st, fmt.Errorf("dòng %d: %w", st.Lines, broad)
+			if broad := publicSuffixIn(line); broad != "" {
+				// TLD trần là dấu hiệu hỏng không thể nhầm: không feed hợp lệ nào
+				// chặn nguyên một TLD.
+				if !strings.Contains(broad, ".") {
+					return st, fmt.Errorf("%w: dòng %d chứa %q", ErrBareTLD, st.Lines, broad)
+				}
+				st.noteBroad(broad)
+				st.RejectReasons["public_suffix"]++
+				continue
 			}
 			st.Rejected++
 			st.RejectReasons[reasonOf(err)]++
@@ -119,8 +146,14 @@ func Parse(r io.Reader, sink Sink) (Stats, error) {
 		}
 
 		for _, rule := range rules {
-			if err := psl.Guard(rule.Domain); err != nil {
-				return st, fmt.Errorf("dòng %d: %w", st.Lines, err)
+			// Rule trùng đúng một public suffix không bao giờ được áp dụng tự động.
+			// Nhưng chỉ bỏ qua và đếm lại chứ không vứt cả feed: HaGeZi TIF có đúng 3
+			// dòng như vậy trên 2,15 triệu, và mất 2,15 triệu domain vì 3 dòng là đánh
+			// đổi sai. Ngưỡng ở Validate mới là thứ bắt feed hỏng thật.
+			if psl.Check(rule.Domain).Verdict == psl.Rejected {
+				st.noteBroad(rule.Domain)
+				st.RejectReasons["public_suffix"]++
+				continue
 			}
 			if err := sink(rule, line); err != nil {
 				return st, fmt.Errorf("dòng %d: %w", st.Lines, err)
@@ -141,15 +174,14 @@ func Parse(r io.Reader, sink Sink) (Stats, error) {
 // publicSuffixIn soi từng token của một dòng đã bị từ chối, tìm rule quá rộng.
 //
 // Quét theo trường để bắt được cả dạng hosts ("0.0.0.0 com") lẫn dạng có chú thích
-// ("com # ghi chú").
-func publicSuffixIn(line string) error {
+// ("com # ghi chú"). Trả về chuỗi rỗng khi không có gì đáng ngại.
+func publicSuffixIn(line string) string {
 	for _, field := range strings.Fields(line) {
-		r := psl.CheckRaw(field)
-		if r.Verdict == psl.Rejected {
-			return &psl.ErrTooBroad{Domain: field, Suffix: r.Suffix, Reason: r.Reason}
+		if psl.CheckRaw(field).Verdict == psl.Rejected {
+			return strings.ToLower(strings.TrimPrefix(field, "*."))
 		}
 	}
-	return nil
+	return ""
 }
 
 // reasonOf gom lỗi thành nhãn ngắn dùng làm label metric. Không được dùng thẳng thông
@@ -177,6 +209,13 @@ func Validate(src Source, st Stats, previousAccepted int) error {
 	if st.Accepted == 0 {
 		return fmt.Errorf("%w (đọc %d dòng, %d bỏ qua, %d lỗi)",
 			ErrEmptyFeed, st.Lines, st.Skipped, st.Rejected)
+	}
+
+	// Vài rule public suffix là chuyện bình thường ở feed thật; rất nhiều thì không.
+	if st.PublicSuffix > src.MaxPublicSuffix {
+		return fmt.Errorf("%w: %d rule (tối đa %d), ví dụ %s",
+			ErrTooManyBroad, st.PublicSuffix, src.MaxPublicSuffix,
+			strings.Join(st.PublicSuffixSamples[:min(3, len(st.PublicSuffixSamples))], ", "))
 	}
 
 	// Chỉ áp ngưỡng tỉ lệ khi mẫu đủ lớn để tỉ lệ có ý nghĩa.

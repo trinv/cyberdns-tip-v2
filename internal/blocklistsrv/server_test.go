@@ -40,7 +40,7 @@ func newServer(t *testing.T, malware []string) (*Server, *snapshot.Store) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	if err := set.Add("malware.txt", render.Header{Category: "malware"}, body); err != nil {
+	if err := set.Add("malware.txt", render.Header{}, body); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if _, err := set.Commit(); err != nil {
@@ -87,7 +87,7 @@ func TestServeBlocklist(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	for _, want := range []string{"evil.example.com", "bad.example.net", "# Category: malware"} {
+	for _, want := range []string{"evil.example.com", "bad.example.net"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body thiếu %q", want)
 		}
@@ -297,7 +297,7 @@ func TestRollbackTakesEffectImmediately(t *testing.T) {
 		[]domainname.Rule{{Domain: "new.example.com", MatchType: domainname.Exact}},
 		render.FormatDomain)
 	set, _ := store.Begin("v2", testNow.Add(time.Hour))
-	_ = set.Add("malware.txt", render.Header{Category: "malware"}, body)
+	_ = set.Add("malware.txt", render.Header{}, body)
 	if _, err := set.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}

@@ -235,10 +235,18 @@ func (s *Store) Apply(
 		return res, fmt.Errorf("store: dọn bảng staging: %w", err)
 	}
 
-	// COPY thay vì INSERT từng hàng: ở mốc hàng triệu bản ghi thì đây là khác biệt
-	// giữa vài chục giây và vài giờ (CLAUDE.md yêu cầu dùng COPY/staging cho bulk).
+	// Khử trùng lặp NGAY TẠI ĐÂY thay vì để SELECT DISTINCT trong SQL lo.
+	//
+	// Đo trên feed HaGeZi thật (2,15 triệu dòng): để SQL khử trùng lặp khiến truy vấn
+	// hợp nhất category chạy hơn 6 phút mà chưa xong, vì nó phải sắp xếp 6,45 triệu
+	// hàng (2,15 triệu nhân 3 category). Khử ở Go tốn vài trăm mili giây.
+	seen := make(map[domainname.Rule]struct{}, len(records))
 	rows := make([][]any, 0, len(records))
 	for _, r := range records {
+		if _, dup := seen[r.Rule]; dup {
+			continue
+		}
+		seen[r.Rule] = struct{}{}
 		rows = append(rows, []any{
 			r.Rule.Domain, int16(r.Rule.MatchType), r.RawLine, r.RawHash,
 		})
@@ -249,6 +257,19 @@ func (s *Store) Apply(
 		pgx.CopyFromRows(rows),
 	); err != nil {
 		return res, fmt.Errorf("store: COPY vào staging: %w", err)
+	}
+
+	// Index và ANALYZE trước khi hợp nhất.
+	//
+	// Bảng staging được join ba lần với bảng domains (quan hệ nguồn, category, bằng
+	// chứng). Không có index thì mỗi lần là một hash join trên hàng triệu hàng, và
+	// planner không có thống kê nên chọn sai kế hoạch.
+	if _, err := tx.Exec(ctx, fmt.Sprintf(
+		"CREATE INDEX ON %s (normalized_domain, match_type)", staging)); err != nil {
+		return res, fmt.Errorf("store: tạo index staging: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "ANALYZE "+staging); err != nil {
+		return res, fmt.Errorf("store: ANALYZE staging: %w", err)
 	}
 
 	if err := applyMerge(ctx, tx, staging, src, importID, feedHash, now, &res); err != nil {
@@ -286,11 +307,9 @@ func applyMerge(
 	err := tx.QueryRow(ctx, fmt.Sprintf(`
 		WITH ins AS (
 			INSERT INTO domains (normalized_domain, match_type, raw_hash, first_seen, last_seen, active)
-			SELECT DISTINCT ON (normalized_domain, match_type)
-			       normalized_domain, match_type, raw_hash,
+			SELECT normalized_domain, match_type, raw_hash,
 			       $1::timestamptz, $1::timestamptz, TRUE
 			  FROM %s
-			 ORDER BY normalized_domain, match_type
 			ON CONFLICT (normalized_domain, match_type) DO UPDATE
 			   SET last_seen  = GREATEST(domains.last_seen, EXCLUDED.last_seen),
 			       first_seen = LEAST(domains.first_seen, EXCLUDED.first_seen),
@@ -311,7 +330,7 @@ func applyMerge(
 		WITH ins AS (
 			INSERT INTO domain_sources
 			       (domain_id, source_id, confidence, first_seen, last_seen, active)
-			SELECT DISTINCT d.id, $2::bigint, $3::smallint, $1::timestamptz, $1::timestamptz, TRUE
+			SELECT d.id, $2::bigint, $3::smallint, $1::timestamptz, $1::timestamptz, TRUE
 			  FROM %s s
 			  JOIN domains d
 			    ON d.normalized_domain = s.normalized_domain
@@ -340,7 +359,7 @@ func applyMerge(
 		// determine data type of parameter".
 		if _, err := tx.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO domain_source_categories (domain_id, source_id, category_id, confidence)
-			SELECT DISTINCT d.id, $1::bigint, c.category_id, $2::smallint
+			SELECT d.id, $1::bigint, c.category_id, $2::smallint
 			  FROM %s s
 			  JOIN domains d
 			    ON d.normalized_domain = s.normalized_domain
@@ -353,6 +372,13 @@ func applyMerge(
 	}
 
 	// 4. Bằng chứng L0 — chỉ ghi thêm, không bao giờ sửa.
+	//
+	// Chỉ ghi khi bản ghi MỚI hoặc dòng thô ĐÃ ĐỔI, không ghi lại mọi dòng ở mọi lần
+	// import. Ghi tất cả nghe có vẻ trung thực hơn, nhưng đo trên feed thật thì đó là
+	// 2,15 triệu hàng mỗi lần feed đổi; HaGeZi đổi vài lần mỗi ngày, tức là hàng tỉ
+	// hàng mỗi năm cho một nguồn. Ghi lại một dòng y hệt lần trước không mang thêm
+	// thông tin nào: việc "vẫn còn thấy" đã nằm ở domain_sources.last_seen, còn
+	// feed_imports giữ lịch sử từng lần chạy.
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO domain_evidence
 		       (domain_id, source_id, feed_import_id, raw_line, raw_hash, feed_hash, seen_at)
@@ -360,7 +386,13 @@ func applyMerge(
 		  FROM %s s
 		  JOIN domains d
 		    ON d.normalized_domain = s.normalized_domain
-		   AND d.match_type = s.match_type`, staging),
+		   AND d.match_type = s.match_type
+		 WHERE NOT EXISTS (
+		         SELECT 1 FROM domain_evidence e
+		          WHERE e.domain_id = d.id
+		            AND e.source_id = $2::bigint
+		            AND e.raw_hash  = s.raw_hash
+		       )`, staging),
 		now, src.ID, importID, feedHash); err != nil {
 		return fmt.Errorf("store: ghi domain_evidence: %w", err)
 	}

@@ -164,12 +164,22 @@ func (s *Service) RunServers(ctx context.Context, ready httpx.ReadyFunc, public 
 		errCh <- nil
 	}
 
-	// Server nào hỏng trước thì kéo cả tiến trình xuống: chạy tiếp với một nửa số cổng
-	// là trạng thái mà orchestrator không phát hiện được.
-	if err := <-errCh; err != nil {
-		return err
+	// Chờ CẢ HAI server rồi mới quyết định, và giữ lại lỗi đầu tiên gặp được.
+	//
+	// Bản trước lấy lỗi ở lần nhận thứ nhất rồi bỏ qua lần thứ hai. Khi service chỉ có
+	// một server thật (feed-ingestor và policy-engine không có cổng công khai), nhánh
+	// else đẩy nil vào channel ngay lập tức, nên lỗi bind cổng của ops server rơi vào
+	// lần nhận thứ hai và bị nuốt mất — tiến trình thoát với mã 0 mà không log gì.
+	// Một service không bind được cổng phải hỏng thật to, không phải im lặng biến mất.
+	var firstErr error
+	for range 2 {
+		if err := <-errCh; err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	<-errCh
+	if firstErr != nil {
+		return firstErr
+	}
 
 	s.Log.Info("đã dừng")
 	return nil

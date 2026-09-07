@@ -288,10 +288,7 @@ func (b *Builder) publish(ctx context.Context, version string, files []file, now
 	})
 
 	for _, f := range ordered {
-		h := render.Header{
-			Category:    f.name[:len(f.name)-len(".txt")],
-			Attribution: labels,
-		}
+		h := render.Header{Attribution: labels}
 		if f.tenant == "" {
 			err = set.Add(f.name, h, f.body)
 		} else {

@@ -116,9 +116,14 @@ func TestApplyCreatesAllLayers(t *testing.T) {
 	}
 }
 
-// Nạp lại cùng một feed không được nhân bản gì ở L1. L0 thì có — mỗi lần nhìn thấy là
-// một bằng chứng riêng, và đó chính là thứ cho phép trả lời "lúc đó nguồn nói gì".
-func TestApplyIsIdempotentAtL1(t *testing.T) {
+// Nạp lại cùng một feed không được nhân bản gì — kể cả ở tầng bằng chứng L0.
+//
+// Ban đầu L0 ghi lại MỌI dòng ở MỌI lần import, nghe có vẻ trung thực hơn. Nhưng đo
+// trên feed thật thì đó là 2,15 triệu hàng mỗi lần feed đổi, và HaGeZi đổi vài lần mỗi
+// ngày — tức là hàng tỉ hàng mỗi năm cho một nguồn. Ghi lại một dòng y hệt lần trước
+// không mang thêm thông tin nào: việc "vẫn còn thấy" đã nằm ở domain_sources.last_seen,
+// còn feed_imports giữ lịch sử từng lần chạy.
+func TestApplyIsIdempotent(t *testing.T) {
 	s, pool := newStore(t)
 	src := addSource(t, pool, "t-hagezi", `["malware"]`, 604800)
 
@@ -136,8 +141,43 @@ func TestApplyIsIdempotentAtL1(t *testing.T) {
 	if n := count(t, pool, "SELECT count(*) FROM domain_sources"); n != 1 {
 		t.Errorf("domain_sources = %d, muốn 1", n)
 	}
+	if n := count(t, pool, "SELECT count(*) FROM domain_evidence"); n != 1 {
+		t.Errorf("domain_evidence = %d, muốn 1: dòng y hệt không sinh bằng chứng mới", n)
+	}
+
+	// Nhưng last_seen PHẢI tiến lên: đó là nơi ghi nhận "vẫn còn thấy".
+	var lastSeen time.Time
+	if err := pool.QueryRow(context.Background(),
+		"SELECT last_seen FROM domain_sources").Scan(&lastSeen); err != nil {
+		t.Fatalf("đọc last_seen: %v", err)
+	}
+	if !lastSeen.Equal(baseTime.Add(time.Hour)) {
+		t.Errorf("last_seen = %v, muốn tiến lên %v", lastSeen, baseTime.Add(time.Hour))
+	}
+}
+
+// Dòng thô ĐỔI thì phải sinh bằng chứng mới: đó chính là thông tin cần giữ.
+func TestChangedRawLineCreatesNewEvidence(t *testing.T) {
+	s, pool := newStore(t)
+	src := addSource(t, pool, "t-hagezi", `["malware"]`, 604800)
+
+	first := store.Record{
+		Rule:    domainname.Rule{Domain: "evil.example.com", MatchType: domainname.Exact},
+		RawLine: "evil.example.com",
+		RawHash: "sha256:dang-cu",
+	}
+	changed := first
+	changed.RawLine = "0.0.0.0 evil.example.com"
+	changed.RawHash = "sha256:dang-moi"
+
+	apply(t, s, src, "v1", baseTime, first)
+	apply(t, s, src, "v2", baseTime.Add(time.Hour), changed)
+
 	if n := count(t, pool, "SELECT count(*) FROM domain_evidence"); n != 2 {
-		t.Errorf("domain_evidence = %d, muốn 2 (L0 tích lũy)", n)
+		t.Errorf("domain_evidence = %d, muốn 2: dòng thô đã đổi", n)
+	}
+	if n := count(t, pool, "SELECT count(*) FROM domains"); n != 1 {
+		t.Errorf("domains = %d, muốn 1: vẫn cùng một domain", n)
 	}
 }
 

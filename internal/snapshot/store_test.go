@@ -46,10 +46,10 @@ func publish(t *testing.T, s *Store, version string, malware, ads []string) Mani
 	}
 	defer set.Abort()
 
-	if err := set.Add("malware.txt", render.Header{Category: "malware"}, body(t, malware...)); err != nil {
+	if err := set.Add("malware.txt", render.Header{}, body(t, malware...)); err != nil {
 		t.Fatalf("Add malware: %v", err)
 	}
-	if err := set.Add("ads.txt", render.Header{Category: "ads"}, body(t, ads...)); err != nil {
+	if err := set.Add("ads.txt", render.Header{}, body(t, ads...)); err != nil {
 		t.Fatalf("Add ads: %v", err)
 	}
 
@@ -115,7 +115,7 @@ func TestAbortedSetIsInvisible(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	// Chỉ ghi được một file rồi hỏng — đúng tình huống E2.
-	if err := set.Add("malware.txt", render.Header{Category: "malware"}, body(t, "new.example.com")); err != nil {
+	if err := set.Add("malware.txt", render.Header{}, body(t, "new.example.com")); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if err := set.Abort(); err != nil {

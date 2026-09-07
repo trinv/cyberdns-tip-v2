@@ -37,6 +37,14 @@ type Source struct {
 	// MaxRejectRatio: tỉ lệ dòng không parse được tối đa.
 	MaxRejectRatio float64
 
+	// MaxPublicSuffix là số rule public suffix tối đa được phép bỏ qua trước khi coi
+	// cả feed là hỏng.
+	//
+	// Feed thật CÓ chứa vài dòng như vậy: HaGeZi TIF có đúng 3 trên 2,15 triệu dòng
+	// (5g.in, 6g.in, firm.in). Vứt bỏ cả feed vì một dòng là đánh đổi sai. Nhưng một
+	// feed hỏng hoặc bị can thiệp sẽ có RẤT NHIỀU, và đó mới là thứ ngưỡng này bắt.
+	MaxPublicSuffix int
+
 	// MinSampleForRatios là số bản ghi tối thiểu để hai ngưỡng TỈ LỆ ở trên có hiệu
 	// lực.
 	//
@@ -63,6 +71,9 @@ func (s Source) withDefaults() Source {
 	}
 	if s.MaxRejectRatio <= 0 {
 		s.MaxRejectRatio = 0.05
+	}
+	if s.MaxPublicSuffix <= 0 {
+		s.MaxPublicSuffix = 20
 	}
 	if s.MinSampleForRatios <= 0 {
 		s.MinSampleForRatios = 100

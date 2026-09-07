@@ -153,10 +153,15 @@ func line(r domainname.Rule, f Format) string {
 }
 
 // Header là phần chú thích đặt đầu file.
+//
+// CỐ TÌNH không có trường Category. Hai file cùng nội dung được lưu chung một bản trên
+// đĩa (xem snapshot.Set.AddTenant), nên nếu header ghi category thì file phục vụ dưới
+// tên malware.txt sẽ mang dòng "Category: all" của bản gốc — tức là file nói dối về
+// chính nó. Mọi trường còn lại đều đúng bất kể fetch dưới tên nào, và category thì
+// client đã biết từ URL.
 type Header struct {
 	Version     string
 	GeneratedAt string
-	Category    string
 	Entries     int
 	Checksum    string
 	// Attribution là bắt buộc: hệ tái phát hành list dẫn xuất từ nhiều nguồn có điều
@@ -176,7 +181,6 @@ func WriteTo(w io.Writer, h Header, b Body) (int64, error) {
 	}
 
 	lines := []struct{ k, v string }{
-		{"Category", h.Category},
 		{"Version", h.Version},
 		{"Generated", h.GeneratedAt},
 		{"Entries", fmt.Sprint(h.Entries)},
