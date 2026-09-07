@@ -287,7 +287,8 @@ func applyMerge(
 		WITH ins AS (
 			INSERT INTO domains (normalized_domain, match_type, raw_hash, first_seen, last_seen, active)
 			SELECT DISTINCT ON (normalized_domain, match_type)
-			       normalized_domain, match_type, raw_hash, $1, $1, TRUE
+			       normalized_domain, match_type, raw_hash,
+			       $1::timestamptz, $1::timestamptz, TRUE
 			  FROM %s
 			 ORDER BY normalized_domain, match_type
 			ON CONFLICT (normalized_domain, match_type) DO UPDATE
@@ -310,7 +311,7 @@ func applyMerge(
 		WITH ins AS (
 			INSERT INTO domain_sources
 			       (domain_id, source_id, confidence, first_seen, last_seen, active)
-			SELECT DISTINCT d.id, $2, $3, $1, $1, TRUE
+			SELECT DISTINCT d.id, $2::bigint, $3::smallint, $1::timestamptz, $1::timestamptz, TRUE
 			  FROM %s s
 			  JOIN domains d
 			    ON d.normalized_domain = s.normalized_domain
@@ -334,16 +335,19 @@ func applyMerge(
 	// Không gán phẳng cho domain: có tách theo nguồn thì mới đếm được "bao nhiêu nguồn
 	// độc lập xác nhận category X" — đầu vào bắt buộc của policy (xung đột A1, B3).
 	if len(src.CategoryIDs) > 0 {
+		// Không truyền "now" vào đây: câu lệnh không dùng tới nó, và Postgres từ chối
+		// một tham số không xuất hiện ở đâu trong câu lệnh với lỗi "could not
+		// determine data type of parameter".
 		if _, err := tx.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO domain_source_categories (domain_id, source_id, category_id, confidence)
-			SELECT DISTINCT d.id, $2, c.category_id, $3
+			SELECT DISTINCT d.id, $1::bigint, c.category_id, $2::smallint
 			  FROM %s s
 			  JOIN domains d
 			    ON d.normalized_domain = s.normalized_domain
 			   AND d.match_type = s.match_type
-			  CROSS JOIN unnest($4::smallint[]) AS c(category_id)
+			  CROSS JOIN unnest($3::smallint[]) AS c(category_id)
 			ON CONFLICT (domain_id, source_id, category_id) DO NOTHING`, staging),
-			now, src.ID, defaultConfidence(src), src.CategoryIDs); err != nil {
+			src.ID, defaultConfidence(src), src.CategoryIDs); err != nil {
 			return fmt.Errorf("store: hợp nhất domain_source_categories: %w", err)
 		}
 	}
@@ -352,7 +356,7 @@ func applyMerge(
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO domain_evidence
 		       (domain_id, source_id, feed_import_id, raw_line, raw_hash, feed_hash, seen_at)
-		SELECT d.id, $2, $3, s.raw_line, s.raw_hash, NULLIF($4, ''), $1
+		SELECT d.id, $2::bigint, $3::bigint, s.raw_line, s.raw_hash, NULLIF($4::text, ''), $1::timestamptz
 		  FROM %s s
 		  JOIN domains d
 		    ON d.normalized_domain = s.normalized_domain
@@ -371,9 +375,9 @@ func applyMerge(
 		WITH deactivated AS (
 			UPDATE domain_sources
 			   SET active = FALSE
-			 WHERE source_id = $1
+			 WHERE source_id = $1::bigint
 			   AND active
-			   AND last_seen < $2::timestamptz - make_interval(secs => $3)
+			   AND last_seen < $2::timestamptz - make_interval(secs => $3::double precision)
 			RETURNING 1
 		)
 		SELECT count(*) FROM deactivated`,

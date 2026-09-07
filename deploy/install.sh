@@ -257,7 +257,10 @@ install_nginx_config() {
         rm -f "$tmp"
     else
         if [[ -f "$NGINX_SITE" ]]; then
-            local backup="${NGINX_SITE}.bak.$(date +%Y%m%d%H%M%S)"
+            # Khai báo tách khỏi gán: "local x=$(cmd)" nuốt mất mã thoát của cmd, vì
+            # giá trị trả về là của chính lệnh local (SC2155).
+            local backup
+            backup="${NGINX_SITE}.bak.$(date +%Y%m%d%H%M%S)"
             cp "$NGINX_SITE" "$backup"
             info "đã sao lưu cấu hình cũ: $backup"
         fi

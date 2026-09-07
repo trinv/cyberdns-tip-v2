@@ -2,47 +2,23 @@ package store_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/vnnic/cyberdns-tip/internal/config"
-	"github.com/vnnic/cyberdns-tip/internal/db"
 	"github.com/vnnic/cyberdns-tip/internal/domainname"
 	"github.com/vnnic/cyberdns-tip/internal/store"
-	"github.com/vnnic/cyberdns-tip/migrations"
+	"github.com/vnnic/cyberdns-tip/internal/testdb"
 )
 
-const dsnEnv = "TIP_TEST_DATABASE_DSN"
+// Schema riêng cho package này; xem internal/testdb.
+const schema = "test_store"
 
 var baseTime = time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
 
 func newStore(t *testing.T) (*store.Store, *pgxpool.Pool) {
 	t.Helper()
-
-	dsn := os.Getenv(dsnEnv)
-	if dsn == "" {
-		t.Skipf("bỏ qua: %s chưa đặt", dsnEnv)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	pool, err := db.Open(ctx, config.Database{
-		DSN: dsn, MaxConns: 4, ConnectTimeout: 10 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("mở CSDL: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	if _, err := pool.Exec(ctx, "DROP SCHEMA public CASCADE; CREATE SCHEMA public"); err != nil {
-		t.Fatalf("dọn lược đồ: %v", err)
-	}
-	if _, err := db.Migrate(ctx, pool, migrations.FS); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	pool := testdb.SetupMigrated(t, schema)
 	return store.New(pool), pool
 }
 

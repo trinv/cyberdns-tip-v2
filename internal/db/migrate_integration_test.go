@@ -2,47 +2,22 @@ package db_test
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/vnnic/cyberdns-tip/internal/config"
 	"github.com/vnnic/cyberdns-tip/internal/db"
+	"github.com/vnnic/cyberdns-tip/internal/testdb"
 	"github.com/vnnic/cyberdns-tip/migrations"
 )
 
-// dsnEnv trỏ tới một PostgreSQL dùng riêng cho test. Test trong file này sẽ bỏ qua khi
-// biến chưa đặt, nên `go test ./...` vẫn chạy được trên máy không có PostgreSQL.
-const dsnEnv = "TIP_TEST_DATABASE_DSN"
+// Mỗi package test dùng schema riêng: `go test ./...` chạy các package song song, và
+// dùng chung schema thì chúng xóa lược đồ của nhau giữa chừng.
+const schema = "test_db"
 
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-
-	dsn := os.Getenv(dsnEnv)
-	if dsn == "" {
-		t.Skipf("bỏ qua: %s chưa đặt", dsnEnv)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	pool, err := db.Open(ctx, config.Database{
-		DSN:            dsn,
-		MaxConns:       4,
-		ConnectTimeout: 10 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("mở CSDL test: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	// Mỗi test bắt đầu từ lược đồ trắng.
-	if _, err := pool.Exec(ctx, "DROP SCHEMA public CASCADE; CREATE SCHEMA public"); err != nil {
-		t.Fatalf("dọn lược đồ: %v", err)
-	}
-	return pool
+	return testdb.Setup(t, schema)
 }
 
 func TestMigrateIsRepeatable(t *testing.T) {
