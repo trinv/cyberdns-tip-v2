@@ -89,6 +89,19 @@ TIP_TEST_DATABASE_DSN='postgres://tip:tip@localhost:5432/tip_test?sslmode=disabl
   go test -count=1 ./internal/db/...
 ```
 
+## Chạy thử trên lab Docker
+
+Stack tự chứa hoàn toàn — không cần tên miền, DNS hay chứng thư thật:
+
+```sh
+./deploy/lab.sh up
+```
+
+Một lệnh: build image, dựng CSDL, chạy migration, tạo tài khoản quản trị, khởi động
+mọi dịch vụ kèm nginx và chứng thư tự ký, rồi in ra URL và mật khẩu.
+
+Hướng dẫn đầy đủ: [deploy/LAB.md](deploy/LAB.md).
+
 ## Triển khai production
 
 TLS và reverse proxy do **nginx chạy trên host** (systemd) đảm nhiệm, không phải
