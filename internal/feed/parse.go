@@ -179,13 +179,17 @@ func Validate(src Source, st Stats, previousAccepted int) error {
 			ErrEmptyFeed, st.Lines, st.Skipped, st.Rejected)
 	}
 
-	if ratio := st.RejectRatio(); ratio > src.MaxRejectRatio {
-		return fmt.Errorf("%w: %.1f%% > %.1f%% (%s)",
-			ErrTooManyRejects, ratio*100, src.MaxRejectRatio*100,
-			strings.Join(st.TopRejectReasons(3), " "))
+	// Chỉ áp ngưỡng tỉ lệ khi mẫu đủ lớn để tỉ lệ có ý nghĩa.
+	meaningful := st.Accepted + st.Rejected
+	if meaningful >= src.MinSampleForRatios {
+		if ratio := st.RejectRatio(); ratio > src.MaxRejectRatio {
+			return fmt.Errorf("%w: %.1f%% > %.1f%% (%s)",
+				ErrTooManyRejects, ratio*100, src.MaxRejectRatio*100,
+				strings.Join(st.TopRejectReasons(3), " "))
+		}
 	}
 
-	if previousAccepted > 0 {
+	if previousAccepted >= src.MinSampleForRatios {
 		delta := st.Accepted - previousAccepted
 		if delta < 0 {
 			delta = -delta

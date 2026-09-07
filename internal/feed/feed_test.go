@@ -393,3 +393,43 @@ func TestTopRejectReasonsIsStable(t *testing.T) {
 		t.Errorf("TopRejectReasons = %q, muốn phá hòa theo thứ tự chữ cái", first)
 	}
 }
+
+// Ngưỡng tỉ lệ không được kích hoạt trên mẫu nhỏ: một feed CERT 50 domain tăng lên 100
+// là chuyện bình thường, và một dòng lỗi trong feed 5 dòng không phải bằng chứng feed
+// hỏng. Cảnh báo giả làm xói mòn lòng tin vào hàng rào nhanh hơn là không có hàng rào.
+func TestRatioGuardsNeedEnoughSamples(t *testing.T) {
+	src := Source{MaxRejectRatio: 0.05, MaxChangeRatio: 0.5, MinSampleForRatios: 100}
+
+	t.Run("tỉ lệ lỗi bỏ qua khi mẫu nhỏ", func(t *testing.T) {
+		// 1 lỗi trên 5 dòng = 20%, vượt xa ngưỡng 5% — nhưng mẫu quá nhỏ.
+		if err := Validate(src, Stats{Accepted: 4, Rejected: 1}, 0); err != nil {
+			t.Errorf("Validate = %v, muốn nil trên mẫu nhỏ", err)
+		}
+	})
+
+	t.Run("tỉ lệ lỗi vẫn áp dụng khi mẫu đủ lớn", func(t *testing.T) {
+		if err := Validate(src, Stats{Accepted: 90, Rejected: 10}, 0); !errors.Is(err, ErrTooManyRejects) {
+			t.Errorf("Validate = %v, muốn ErrTooManyRejects", err)
+		}
+	})
+
+	t.Run("biến động bỏ qua khi nền trước nhỏ", func(t *testing.T) {
+		// 1 -> 2 là tăng 100%, nhưng trên nền 1 bản ghi thì con số đó vô nghĩa.
+		if err := Validate(src, Stats{Accepted: 2}, 1); err != nil {
+			t.Errorf("Validate = %v, muốn nil khi nền trước nhỏ", err)
+		}
+	})
+
+	t.Run("biến động vẫn áp dụng khi nền trước đủ lớn", func(t *testing.T) {
+		if err := Validate(src, Stats{Accepted: 100}, 1000); !errors.Is(err, ErrChangeTooLarge) {
+			t.Errorf("Validate = %v, muốn ErrChangeTooLarge", err)
+		}
+	})
+
+	t.Run("feed rỗng vẫn luôn bị từ chối bất kể quy mô", func(t *testing.T) {
+		// Đây là hàng rào KHÔNG có ngưỡng mẫu: feed rỗng luôn là lỗi.
+		if err := Validate(src, Stats{Lines: 3, Skipped: 3}, 0); !errors.Is(err, ErrEmptyFeed) {
+			t.Errorf("Validate = %v, muốn ErrEmptyFeed", err)
+		}
+	})
+}

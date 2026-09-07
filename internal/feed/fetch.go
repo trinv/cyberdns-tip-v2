@@ -36,6 +36,16 @@ type Source struct {
 
 	// MaxRejectRatio: tỉ lệ dòng không parse được tối đa.
 	MaxRejectRatio float64
+
+	// MinSampleForRatios là số bản ghi tối thiểu để hai ngưỡng TỈ LỆ ở trên có hiệu
+	// lực.
+	//
+	// Tỉ lệ trên mẫu nhỏ là vô nghĩa: một feed CERT 50 domain tăng lên 100 là chuyện
+	// bình thường, nhưng ratio báo "biến động 100%". Hai hàng rào kia sinh ra để bắt
+	// "feed mất 80% nội dung" hoặc "feed phình 10 lần" — những thứ chỉ có ý nghĩa ở
+	// quy mô lớn. Dưới ngưỡng này thì bỏ qua chúng, vì cảnh báo giả làm xói mòn lòng
+	// tin vào hàng rào nhanh hơn là không có hàng rào.
+	MinSampleForRatios int
 }
 
 func (s Source) withDefaults() Source {
@@ -53,6 +63,9 @@ func (s Source) withDefaults() Source {
 	}
 	if s.MaxRejectRatio <= 0 {
 		s.MaxRejectRatio = 0.05
+	}
+	if s.MinSampleForRatios <= 0 {
+		s.MinSampleForRatios = 100
 	}
 	return s
 }
