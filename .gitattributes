@@ -1,0 +1,9 @@
+# Repo build trong container Linux: chuẩn hóa mọi file văn bản về LF.
+# Makefile, Caddyfile và script shell với CRLF sẽ hỏng trên Linux.
+* text=auto eol=lf
+
+# Nhị phân: Git không được đụng vào.
+*.docx binary
+*.zip  binary
+*.png  binary
+*.pdf  binary
