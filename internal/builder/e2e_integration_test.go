@@ -186,7 +186,7 @@ func feedServer(t *testing.T, body string) *httptest.Server {
 // blocklist: domain bị chặn thì có trong file, domain allowlist thì không.
 func TestEndToEndFeedToPublishedURL(t *testing.T) {
 	r := newRig(t)
-	src := addSource(t, r, "hagezi-tif", `["malware"]`, "GPL-3.0")
+	src := addSource(t, r, "t-hagezi", `["malware"]`, "GPL-3.0")
 
 	srv := feedServer(t, strings.Join([]string{
 		"# HaGeZi Threat Intelligence Feed",

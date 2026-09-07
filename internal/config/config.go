@@ -25,6 +25,15 @@ type Config struct {
 	Ops      Ops      `yaml:"ops"`
 	Public   Public   `yaml:"public"`
 	Snapshot Snapshot `yaml:"snapshot"`
+	Schedule Schedule `yaml:"schedule"`
+}
+
+// Schedule là chu kỳ chạy của vòng lặp công việc.
+type Schedule struct {
+	// Interval là khoảng cách giữa hai lượt chạy.
+	Interval time.Duration `yaml:"interval"`
+	// RunAtStart chạy ngay một lượt lúc khởi động thay vì chờ hết chu kỳ đầu.
+	RunAtStart bool `yaml:"run_at_start"`
 }
 
 type Database struct {
@@ -147,6 +156,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Ops.Addr == "" {
 		c.Ops.Addr = "127.0.0.1:9090"
+	}
+	if c.Schedule.Interval == 0 {
+		c.Schedule.Interval = time.Hour
 	}
 	if c.Public.CacheMaxAge == 0 {
 		c.Public.CacheMaxAge = 5 * time.Minute

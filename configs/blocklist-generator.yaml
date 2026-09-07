@@ -24,3 +24,8 @@ public:
   addr: ${TIP_PUBLIC_ADDR:-0.0.0.0:8080}
   base_url: ${TIP_PUBLIC_BASE_URL:-https://tip.cyberdns.vn}
   cache_max_age: 5m
+
+schedule:
+  # Dựng lại thường xuyên nhưng chỉ publish khi checksum nội dung thực sự đổi.
+  interval: ${TIP_BUILD_INTERVAL:-15m}
+  run_at_start: true

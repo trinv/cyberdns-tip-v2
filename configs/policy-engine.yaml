@@ -17,3 +17,8 @@ snapshot:
   root: ${TIP_SNAPSHOT_ROOT:-./data/snapshots}
   # Số bộ cũ giữ lại để rollback.
   keep: 5
+
+schedule:
+  # Chạy dày hơn ingestor một chút để quyết định bắt kịp dữ liệu mới.
+  interval: ${TIP_POLICY_INTERVAL:-30m}
+  run_at_start: true

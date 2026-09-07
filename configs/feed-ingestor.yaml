@@ -17,3 +17,8 @@ snapshot:
   root: ${TIP_SNAPSHOT_ROOT:-./data/snapshots}
   # Số bộ cũ giữ lại để rollback.
   keep: 5
+
+schedule:
+  # Chu kỳ tính từ lúc lượt trước KẾT THÚC, không phải từ lúc bắt đầu.
+  interval: ${TIP_INGEST_INTERVAL:-1h}
+  run_at_start: true

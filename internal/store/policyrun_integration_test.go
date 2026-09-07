@@ -54,7 +54,7 @@ func decisionOf(t *testing.T, pool *pgxpool.Pool, domain, category string) (stri
 func TestEvaluateAllWritesDecisions(t *testing.T) {
 	s, pool := newStore(t)
 	// trust 90 x confidence 90 = 81, vượt ngưỡng malware (70).
-	src := addSource(t, pool, "hagezi-tif", `["malware"]`, 604800)
+	src := addSource(t, pool, "t-hagezi", `["malware"]`, 604800)
 
 	apply(t, s, src, "v1", baseTime,
 		rec("evil.example.com", domainname.Exact),
@@ -83,7 +83,7 @@ func TestEvaluateAllWritesDecisions(t *testing.T) {
 // động, nghĩa là allowlist wildcard ở example.com phủ luôn shop.example.com.
 func TestProtectedAllowlistBeatsEverything(t *testing.T) {
 	s, pool := newStore(t)
-	src := addSource(t, pool, "hagezi-tif", `["malware"]`, 604800)
+	src := addSource(t, pool, "t-hagezi", `["malware"]`, 604800)
 	ctx := context.Background()
 
 	if _, err := pool.Exec(ctx, `
@@ -238,22 +238,28 @@ func TestOpenCTIDoesNotInflateIndependentSourceCount(t *testing.T) {
 	s, pool := newStore(t)
 	ctx := context.Background()
 
-	feed := addSource(t, pool, "hagezi-tif", `["malware"]`, 604800)
+	feed := addSource(t, pool, "t-hagezi", `["malware"]`, 604800)
 
 	// Nguồn thứ hai mô phỏng dữ liệu quay về từ OpenCTI.
 	var octiID int64
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO sources (name, source_type, origin, trust_score, config)
-		VALUES ('opencti', 'stream', 'opencti', 90, '{"categories": ["malware"]}'::jsonb)
+		VALUES ('t-opencti', 'stream', 'opencti', 90, '{"categories": ["malware"]}'::jsonb)
 		RETURNING id`).Scan(&octiID); err != nil {
 		t.Fatalf("tạo nguồn opencti: %v", err)
 	}
-	octiSrcs, err := s.EnabledSources(ctx, "opencti")
+	all, err := s.EnabledSources(ctx, "opencti")
 	if err != nil {
 		t.Fatalf("EnabledSources: %v", err)
 	}
+	var octiSrcs []store.Source
+	for _, src := range all {
+		if src.ID == octiID {
+			octiSrcs = append(octiSrcs, src)
+		}
+	}
 	if len(octiSrcs) != 1 {
-		t.Fatalf("có %d nguồn opencti, muốn 1", len(octiSrcs))
+		t.Fatalf("không tìm thấy nguồn opencti vừa tạo (có %d nguồn opencti đang bật)", len(all))
 	}
 
 	shared := rec("evil.example.com", domainname.Exact)

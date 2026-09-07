@@ -90,7 +90,7 @@ func count(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 
 func TestApplyCreatesAllLayers(t *testing.T) {
 	s, pool := newStore(t)
-	src := addSource(t, pool, "hagezi-tif", `["malware","phishing"]`, 604800)
+	src := addSource(t, pool, "t-hagezi", `["malware","phishing"]`, 604800)
 
 	res := apply(t, s, src, "sha256:v1", baseTime,
 		rec("evil.example.com", domainname.Exact),
@@ -120,7 +120,7 @@ func TestApplyCreatesAllLayers(t *testing.T) {
 // một bằng chứng riêng, và đó chính là thứ cho phép trả lời "lúc đó nguồn nói gì".
 func TestApplyIsIdempotentAtL1(t *testing.T) {
 	s, pool := newStore(t)
-	src := addSource(t, pool, "hagezi-tif", `["malware"]`, 604800)
+	src := addSource(t, pool, "t-hagezi", `["malware"]`, 604800)
 
 	recs := []store.Record{rec("evil.example.com", domainname.Exact)}
 
