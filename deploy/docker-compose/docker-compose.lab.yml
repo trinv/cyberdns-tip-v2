@@ -151,6 +151,7 @@ services:
     ports:
       - "${LAB_BLOCKLIST_PORT:-8443}:443"   # blocklist công khai
       - "${LAB_ADMIN_PORT:-9443}:9443"      # dashboard quản trị
+      - "${LAB_OPENCTI_PORT:-10443}:10443"  # OpenCTI (502 khi chưa bật)
     volumes:
       - ./lab-nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - certs:/etc/nginx/certs:ro

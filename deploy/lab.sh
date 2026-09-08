@@ -81,6 +81,7 @@ POSTGRES_PASSWORD=$pw
 # Cổng trên máy host. Đổi ở đây nếu bị trùng với dịch vụ khác.
 LAB_BLOCKLIST_PORT=8443
 LAB_ADMIN_PORT=9443
+LAB_OPENCTI_PORT=10443
 LAB_POSTGRES_PORT=55433
 
 # Chu kỳ ngắn để thấy kết quả nhanh khi thử nghiệm.
@@ -90,6 +91,16 @@ TIP_BUILD_INTERVAL=5m
 TIP_LOG_LEVEL=info
 EOF
     ok "đã ghi $(basename "$ENV_FILE")"
+}
+
+# uuid4 sinh một UUID phiên bản 4 mà không cần uuidgen — gói đó không có sẵn ở nhiều
+# bản phân phối tối giản.
+uuid4() {
+    local h
+    h=$(od -An -tx1 -N16 /dev/urandom | tr -d ' 
+')
+    printf '%s-%s-4%s-a%s-%s
+'         "${h:0:8}" "${h:8:4}" "${h:13:3}" "${h:17:3}" "${h:20:12}"
 }
 
 port_of() {
@@ -172,6 +183,21 @@ cmd_urls() {
         pw=$(sed -n 2p "$ADMIN_FILE")
     fi
 
+    # Chỉ hiện phần OpenCTI khi nó đã được cấu hình.
+    local OCTI_BLOCK=""
+    if [[ -f "$COMPOSE_DIR/.env.opencti" ]]; then
+        local oport oemail opw
+        oport=$(port_of LAB_OPENCTI_PORT 10443)
+        oemail=$(grep -E '^OPENCTI_ADMIN_EMAIL=' "$COMPOSE_DIR/.env.opencti" | cut -d= -f2)
+        opw=$(grep -E '^OPENCTI_ADMIN_PASSWORD=' "$COMPOSE_DIR/.env.opencti" | cut -d= -f2)
+        OCTI_BLOCK="  ${BLUE}OpenCTI${RESET}
+      https://localhost:${oport}
+      Tài khoản  ${oemail}
+      Mật khẩu   ${opw}
+
+"
+    fi
+
     cat <<EOF
 
 ${BOLD}Truy cập${RESET}
@@ -187,7 +213,7 @@ ${BOLD}Truy cập${RESET}
       https://localhost:${bport}/blocklist/all.txt
       https://localhost:${bport}/blocklist/manifest.json
 
-  Chứng thư là bản TỰ KÝ nên trình duyệt sẽ cảnh báo. Với curl thêm cờ -k:
+${OCTI_BLOCK}  Chứng thư là bản TỰ KÝ nên trình duyệt sẽ cảnh báo. Với curl thêm cờ -k:
       curl -k https://localhost:${bport}/blocklist/manifest.json
 
   Truy cập từ máy khác trong lab: thay localhost bằng IP của máy chủ này.
@@ -249,18 +275,147 @@ cmd_logs() {
     fi
 }
 
+# setup_opencti_env sinh cấu hình OpenCTI cho lab.
+#
+# Không dùng deploy/install-opencti.sh: script đó viết cho production, đòi file .env của
+# bản production và dùng docker-compose.prod.yml. Trong lab cả hai đều không tồn tại.
+setup_opencti_env() {
+    local f="$COMPOSE_DIR/.env.opencti"
+
+    # KHÔNG ghi đè. OPENCTI_ENCRYPTION_KEY gắn với dữ liệu đã nằm trong Elasticsearch và
+    # MinIO; sinh khóa mới là mất khả năng giải mã dữ liệu cũ.
+    if [[ -f "$f" ]]; then
+        ok "đã có .env.opencti, giữ nguyên"
+        return
+    fi
+
+    command -v openssl >/dev/null 2>&1 || die "cần openssl để sinh bí mật cho OpenCTI"
+
+    local admin_pass minio_pass rabbit_pass
+    admin_pass=$(openssl rand -base64 24 | tr -d '
+/+=' | head -c 24)
+    minio_pass=$(openssl rand -base64 32 | tr -d '
+/+=' | head -c 32)
+    rabbit_pass=$(openssl rand -base64 32 | tr -d '
+/+=' | head -c 32)
+
+    umask 077
+    cat > "$f" <<EOF
+# Sinh tự động bởi deploy/lab.sh lúc $(date -Is). Chỉ dùng cho LAB.
+#
+# SAO LƯU FILE NÀY nếu dữ liệu trong lab có giá trị: mất OPENCTI_ENCRYPTION_KEY là
+# không giải mã được dữ liệu đã lưu.
+
+OPENCTI_VERSION=7.260907.0
+
+OPENCTI_ADMIN_EMAIL=admin@vnnic.vn
+OPENCTI_ADMIN_PASSWORD=$admin_pass
+OPENCTI_ADMIN_TOKEN=$(uuid4)
+OPENCTI_ENCRYPTION_KEY=$(openssl rand -base64 32)
+OPENCTI_HEALTHCHECK_ACCESS_KEY=$(openssl rand -hex 16)
+OPENCTI_HOST_PORT=8081
+OPENCTI_BASE_URL=https://localhost:${LAB_OPENCTI_PORT:-10443}
+
+MINIO_ROOT_USER=opencti
+MINIO_ROOT_PASSWORD=$minio_pass
+
+RABBITMQ_DEFAULT_USER=opencti
+RABBITMQ_DEFAULT_PASS=$rabbit_pass
+
+# Cấu hình gọn cho lab. Production cần nhiều hơn.
+ELASTIC_MEMORY_SIZE=2G
+OPENCTI_NODE_HEAP=2048
+OPENCTI_WORKER_REPLICAS=1
+
+# Mỗi connector một UUID riêng: trùng ID thì hai connector tranh nhau cùng hàng đợi.
+CONNECTOR_EXPORT_FILE_STIX_ID=$(uuid4)
+CONNECTOR_EXPORT_FILE_CSV_ID=$(uuid4)
+CONNECTOR_EXPORT_FILE_TXT_ID=$(uuid4)
+CONNECTOR_IMPORT_FILE_STIX_ID=$(uuid4)
+CONNECTOR_IMPORT_DOCUMENT_ID=$(uuid4)
+CONNECTOR_OPENCTI_ID=$(uuid4)
+CONNECTOR_MITRE_ID=$(uuid4)
+EOF
+    ok "đã sinh .env.opencti với bí mật ngẫu nhiên"
+}
+
+# check_max_map_count là nguyên nhân số một khiến Elasticsearch không khởi động được.
+# Nó không chạy ở chế độ suy giảm mà thoát hẳn.
+check_max_map_count() {
+    local required=262144 current
+    current=$(sysctl -n vm.max_map_count 2>/dev/null || echo 0)
+
+    if [[ "${current:-0}" -ge $required ]]; then
+        ok "vm.max_map_count = $current"
+        return
+    fi
+
+    warn "vm.max_map_count = ${current:-khong doc duoc}, cần >= $required"
+    warn "Elasticsearch sẽ THOÁT HẲN nếu thiếu. Chạy lệnh sau rồi thử lại:"
+    printf '
+        sudo sysctl -w vm.max_map_count=%s
+
+' "$required"
+    warn "Giữ qua reboot:"
+    printf '        echo "vm.max_map_count=%s" | sudo tee /etc/sysctl.d/99-opencti.conf
+
+' "$required"
+
+    if [[ -f /proc/version ]] && grep -qiE "microsoft|wsl" /proc/version 2>/dev/null; then
+        warn "Đang chạy trên WSL: đặt giá trị này trong WSL, không phải Windows."
+    fi
+    die "dừng lại để tránh Elasticsearch khởi động rồi chết ngay."
+}
+
 cmd_opencti() {
     preflight
-    [[ -f "$COMPOSE_DIR/.env.opencti" ]] \
-        || die "chưa có .env.opencti. Chạy: sudo ./deploy/install-opencti.sh"
+    [[ -f "$ENV_FILE" ]] || die "chưa có stack lab. Chạy: ./deploy/lab.sh up"
+
+    step "Kiểm tra tài nguyên"
+    if [[ -r /proc/meminfo ]]; then
+        local total_mb
+        total_mb=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 ))
+        info "RAM tổng: ${total_mb} MB"
+        if [[ $total_mb -lt 12000 ]]; then
+            warn "OpenCTI cần khoảng 8-16 GB NGOÀI phần stack chính đang dùng."
+            warn "Máy này có ${total_mb} MB — Elasticsearch nhiều khả năng bị OOM killer giết."
+            read -r -p "    Vẫn tiếp tục? [y/N] " reply </dev/tty || reply=n
+            [[ "$reply" =~ ^[Yy]$ ]] || die "dừng lại."
+        fi
+    else
+        warn "không đọc được /proc/meminfo, bỏ qua kiểm tra RAM"
+    fi
+
+    check_max_map_count
+
+    step "Cấu hình OpenCTI"
+    setup_opencti_env
+
+    step "Tải image"
+    info "cụm này vài GB, lần đầu có thể rất lâu"
+    compose_all pull --quiet opencti opencti-worker elasticsearch redis minio rabbitmq         || die "docker pull thất bại"
 
     step "Khởi động OpenCTI"
-    warn "cụm này cần khoảng 16 GB RAM ngoài phần stack chính đang dùng"
-    warn "Elasticsearch cần vm.max_map_count >= 262144 trên HOST:"
-    warn "  sudo sysctl -w vm.max_map_count=262144"
+    compose_all up -d || die "khởi động thất bại"
+    ok "container đã lên"
 
-    compose_all up -d
-    ok "đã lên. Giao diện: http://localhost:8081 (chỉ loopback)"
+    step "Chờ OpenCTI sẵn sàng"
+    info "lần đầu phải tạo toàn bộ chỉ mục Elasticsearch; vài phút là bình thường"
+    local key waited=0
+    key=$(grep -E '^OPENCTI_HEALTHCHECK_ACCESS_KEY=' "$COMPOSE_DIR/.env.opencti" | cut -d= -f2)
+    until curl -fsS --max-time 5         "http://127.0.0.1:8081/health?health_access_key=${key}" >/dev/null 2>&1; do
+        sleep 10
+        waited=$((waited + 10))
+        if [[ $waited -ge 900 ]]; then
+            warn "quá 15 phút mà chưa sẵn sàng"
+            warn "xem nhật ký: ./deploy/lab.sh logs opencti"
+            return
+        fi
+        [[ $((waited % 60)) -eq 0 ]] && info "còn chờ... ${waited}s"
+    done
+    ok "OpenCTI sẵn sàng sau ${waited}s"
+
+    cmd_urls
 }
 
 cmd_down() {

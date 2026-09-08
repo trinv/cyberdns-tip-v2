@@ -49,6 +49,7 @@ trạng thái trước khi làm, và **không bao giờ ghi đè** mật khẩu 
 | Dashboard quản trị | `https://localhost:9443` |
 | Blocklist | `https://localhost:8443/blocklist/malware.txt` |
 | Manifest | `https://localhost:8443/blocklist/manifest.json` |
+| OpenCTI | `https://localhost:10443` (sau khi bật, xem bên dưới) |
 
 Quên mật khẩu thì chạy `./deploy/lab.sh urls`.
 
@@ -120,21 +121,61 @@ hoặc trỏ thẳng vào cổng HTTP nội bộ của container thay vì qua ng
 
 ## Bật OpenCTI
 
-Nặng: cần khoảng **16 GB RAM** ngoài phần stack chính.
-
 ```sh
-# Elasticsearch cần giá trị này trên HOST, nếu thiếu nó thoát hẳn chứ không chạy suy giảm
-sudo sysctl -w vm.max_map_count=262144
-
-sudo ./deploy/install-opencti.sh    # sinh .env.opencti với bí mật ngẫu nhiên
 ./deploy/lab.sh opencti
 ```
 
-Giao diện ở `http://localhost:8081`, tài khoản nằm trong
-`deploy/docker-compose/.env.opencti`.
+Script tự lo mọi thứ: kiểm tra RAM, kiểm tra `vm.max_map_count`, sinh `.env.opencti` với
+bí mật ngẫu nhiên, tải image, khởi động, chờ sẵn sàng, rồi in ra tài khoản đăng nhập.
 
-**OpenCTI hiện chưa nối vào đường sinh blocklist.** Nó chạy và dùng được giao diện,
-nhưng `opencti-connector` và `sync-consumer` thuộc P4 và chưa được viết.
+**Đăng nhập:** `https://localhost:10443`, tài khoản `admin@vnnic.vn`. Mật khẩu in ra khi
+chạy xong, hoặc lấy lại bất cứ lúc nào bằng `./deploy/lab.sh urls`.
+
+### Trước khi chạy
+
+**RAM.** Cụm này cần khoảng **8–16 GB ngoài** phần stack chính đang dùng. Cấu hình lab
+đã hạ Elasticsearch xuống 2 GB heap và chỉ một worker; production cần nhiều hơn hẳn.
+Script sẽ cảnh báo và hỏi nếu máy dưới 12 GB.
+
+**`vm.max_map_count`.** Đây là nguyên nhân số một khiến Elasticsearch không khởi động
+được, và nó **thoát hẳn** chứ không chạy ở chế độ suy giảm:
+
+```sh
+sudo sysctl -w vm.max_map_count=262144
+
+# Giữ qua reboot
+echo "vm.max_map_count=262144" | sudo tee /etc/sysctl.d/99-opencti.conf
+```
+
+Script kiểm tra trước và dừng lại nếu thiếu, thay vì để bạn chờ Elasticsearch chết đi
+chết lại. Trên WSL thì đặt giá trị này **trong WSL**, không phải Windows.
+
+**Thời gian.** Tải image mất vài GB. Lần khởi động đầu OpenCTI phải tạo toàn bộ chỉ mục
+Elasticsearch và nạp dữ liệu nền — vài phút là bình thường, script chờ tối đa 15 phút.
+
+### Trạng thái tích hợp
+
+**OpenCTI hiện chưa nối vào đường sinh blocklist.** Nó chạy được, dùng được giao diện,
+nhập và xuất STIX được — nhưng hai thành phần nối nó với PostgreSQL vẫn thuộc P4 và chưa
+được viết:
+
+| Thành phần | Vai trò | Trạng thái |
+|---|---|---|
+| `opencti-connector` | canonical record → STIX 2.1 đẩy vào OpenCTI | chưa viết |
+| `sync-consumer` | Live Stream → PostgreSQL | chưa viết |
+
+Lược đồ và policy đã sẵn sàng đón dữ liệu: cột `sources.origin`, `domain_sources.revoked_at`
+và `valid_until`, nấc 5 `opencti_revoked` trong thang ưu tiên, cùng quy tắc chỉ đếm
+nguồn `origin='direct'` để chặn vòng lặp phản hồi. Nhưng chưa có gì chảy qua.
+
+### Tắt OpenCTI, giữ stack chính
+
+```sh
+docker compose -f deploy/docker-compose/docker-compose.lab.yml \n  -f deploy/docker-compose/docker-compose.opencti.yml \n  --env-file deploy/docker-compose/.env.lab \n  --env-file deploy/docker-compose/.env.opencti \n  stop opencti opencti-worker elasticsearch redis minio rabbitmq
+```
+
+Cổng 10443 sẽ trả **502** khi OpenCTI tắt — đúng như thiết kế, và blocklist với dashboard
+không bị ảnh hưởng.
 
 ## Xử lý sự cố
 

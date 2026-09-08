@@ -27,7 +27,10 @@
 #    của báo cáo phương án §8.2. Xem deploy/opencti/README.md để biết cách truy cập.
 # ---------------------------------------------------------------------------
 
-name: cyberdns-tip
+# CỐ TÌNH không khai báo "name". File này luôn là lớp phủ, không bao giờ chạy một
+# mình. Khi ghép nhiều file, compose lấy "name" của file ĐẦU tiên có khai báo — đặt tên
+# ở đây sẽ ghi đè tên project của stack đang chạy và khiến compose dựng một BẢN SAO THỨ
+# HAI của toàn bộ stack dưới project khác, thay vì thêm OpenCTI vào stack hiện có.
 
 services:
   elasticsearch:
