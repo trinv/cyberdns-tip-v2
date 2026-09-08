@@ -171,7 +171,11 @@ nguồn `origin='direct'` để chặn vòng lặp phản hồi. Nhưng chưa c�
 ### Tắt OpenCTI, giữ stack chính
 
 ```sh
-docker compose -f deploy/docker-compose/docker-compose.lab.yml \n  -f deploy/docker-compose/docker-compose.opencti.yml \n  --env-file deploy/docker-compose/.env.lab \n  --env-file deploy/docker-compose/.env.opencti \n  stop opencti opencti-worker elasticsearch redis minio rabbitmq
+cd deploy/docker-compose
+
+docker compose -f docker-compose.lab.yml -f docker-compose.opencti.yml \
+  --env-file .env.lab --env-file .env.opencti \
+  stop opencti opencti-worker elasticsearch redis minio rabbitmq
 ```
 
 Cổng 10443 sẽ trả **502** khi OpenCTI tắt — đúng như thiết kế, và blocklist với dashboard
