@@ -112,6 +112,11 @@ func TestEveryEndpointRequiresAuth(t *testing.T) {
 		{http.MethodGet, "/api/allowlist"},
 		{http.MethodPost, "/api/allowlist"},
 		{http.MethodDelete, "/api/allowlist/1"},
+		{http.MethodPost, "/api/sources/1/sync"},
+		{http.MethodPost, "/api/sync"},
+		{http.MethodPost, "/api/policy/run"},
+		{http.MethodPost, "/api/blocklist/build"},
+		{http.MethodGet, "/api/triggers/1"},
 	}
 
 	for _, e := range endpoints {
@@ -388,6 +393,178 @@ func TestErrorsDoNotLeakInternals(t *testing.T) {
 		if strings.Contains(body, leak) {
 			t.Errorf("phản hồi lộ chi tiết nội bộ (%q): %s", leak, body)
 		}
+	}
+}
+
+// ------------------------------------------------------------ yêu cầu chạy ngay
+
+// newSourceID tạo một nguồn 'direct' tối thiểu và trả về id, dùng làm dữ liệu nền cho
+// các test yêu cầu đồng bộ — không đi qua API để không lẫn với thứ đang được test.
+func newSourceID(t *testing.T, c *client, name string) int64 {
+	t.Helper()
+	var id int64
+	err := c.pool.QueryRow(context.Background(), `
+		INSERT INTO sources (name, url, source_type, origin, trust_score, enabled, license)
+		VALUES ($1, 'https://example.test/list.txt', 'plain', 'direct', 80, TRUE, 'GPL-3.0')
+		RETURNING id`, name).Scan(&id)
+	if err != nil {
+		t.Fatalf("tạo nguồn nền %s: %v", name, err)
+	}
+	return id
+}
+
+func TestSyncSourceEnqueuesTrigger(t *testing.T) {
+	c := newClient(t)
+	c.login("owner")
+	id := newSourceID(t, c, "t-sync-src")
+
+	rec := c.do(http.MethodPost, "/api/sources/"+itoa(float64(id))+"/sync", nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("mã = %d: %s", rec.Code, rec.Body.String())
+	}
+	tid := int64(decodeBody[map[string]any](t, rec)["trigger_id"].(float64))
+	if tid == 0 {
+		t.Fatal("trigger_id = 0")
+	}
+
+	status := c.do(http.MethodGet, "/api/triggers/"+itoa(float64(tid)), nil)
+	if status.Code != http.StatusOK {
+		t.Fatalf("đọc trạng thái = %d: %s", status.Code, status.Body.String())
+	}
+	got := decodeBody[map[string]any](t, status)
+	if got["kind"] != "sync" {
+		t.Errorf("kind = %v, muốn sync", got["kind"])
+	}
+	if got["status"] != "pending" {
+		t.Errorf("status = %v, muốn pending (chưa có service nào tiêu thụ)", got["status"])
+	}
+	if got["source_name"] != "t-sync-src" {
+		t.Errorf("source_name = %v, muốn t-sync-src", got["source_name"])
+	}
+}
+
+func TestSyncSourceNotFound(t *testing.T) {
+	c := newClient(t)
+	c.login("owner")
+
+	rec := c.do(http.MethodPost, "/api/sources/999999/sync", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("mã = %d, muốn 404", rec.Code)
+	}
+}
+
+// Nguồn 'opencti' đồng bộ qua sync-consumer nghe Live Stream, không qua feed-ingestor —
+// gửi yêu cầu vào đây phải bị từ chối rõ ràng, không phải im lặng không làm gì.
+func TestSyncSourceRejectsOpenCTIOrigin(t *testing.T) {
+	c := newClient(t)
+	c.login("owner")
+
+	var octiID int64
+	if err := c.pool.QueryRow(context.Background(),
+		"SELECT id FROM sources WHERE origin = 'opencti' LIMIT 1").Scan(&octiID); err != nil {
+		t.Fatalf("đọc nguồn opencti (seed 0003): %v", err)
+	}
+
+	rec := c.do(http.MethodPost, "/api/sources/"+itoa(float64(octiID))+"/sync", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("mã = %d, muốn 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSyncAllEnqueuesTrigger(t *testing.T) {
+	c := newClient(t)
+	c.login("owner")
+
+	rec := c.do(http.MethodPost, "/api/sync", nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("mã = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Bấm hai lần liền trước khi có service nào tiêu thụ yêu cầu đầu tiên phải trả về CÙNG
+// một trigger_id — xem store.EnqueueTrigger.
+func TestDuplicateSyncRequestReusesTrigger(t *testing.T) {
+	c := newClient(t)
+	c.login("owner")
+	id := newSourceID(t, c, "t-sync-dup")
+
+	path := "/api/sources/" + itoa(float64(id)) + "/sync"
+	first := decodeBody[map[string]any](t, c.do(http.MethodPost, path, nil))
+	second := decodeBody[map[string]any](t, c.do(http.MethodPost, path, nil))
+
+	if first["trigger_id"] != second["trigger_id"] {
+		t.Errorf("trigger_id khác nhau giữa hai lần bấm liền: %v vs %v",
+			first["trigger_id"], second["trigger_id"])
+	}
+}
+
+func TestRunPolicyRequiresPermission(t *testing.T) {
+	c := newClient(t)
+	c.login("viewer")
+
+	if rec := c.do(http.MethodPost, "/api/policy/run", nil); rec.Code != http.StatusForbidden {
+		t.Errorf("viewer chạy policy = %d, muốn 403", rec.Code)
+	}
+}
+
+// operator được migration 0008 cấp policy:write dù seed ban đầu (0002) không có.
+func TestRunPolicyAllowsOperator(t *testing.T) {
+	c := newClient(t)
+	c.login("operator")
+
+	rec := c.do(http.MethodPost, "/api/policy/run", nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("operator chạy policy = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBuildBlocklistRequiresPermission(t *testing.T) {
+	c := newClient(t)
+	c.login("viewer")
+
+	if rec := c.do(http.MethodPost, "/api/blocklist/build", nil); rec.Code != http.StatusForbidden {
+		t.Errorf("viewer dựng blocklist = %d, muốn 403", rec.Code)
+	}
+}
+
+func TestBuildBlocklistAllowsOperator(t *testing.T) {
+	c := newClient(t)
+	c.login("operator")
+
+	rec := c.do(http.MethodPost, "/api/blocklist/build", nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("operator dựng blocklist = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTriggerStatusNotFound(t *testing.T) {
+	c := newClient(t)
+	c.login("owner")
+
+	rec := c.do(http.MethodGet, "/api/triggers/999999", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("mã = %d, muốn 404", rec.Code)
+	}
+}
+
+// Trạng thái yêu cầu không đòi quyền tạo ra loại yêu cầu đó — "đồng bộ xong chưa"
+// không phải thông tin nhạy cảm, và một tài khoản chỉ-đọc cần xem được để theo dõi khi
+// người khác bấm nút.
+//
+// Dùng CHUNG một client (cùng schema CSDL) cho cả hai lần đăng nhập: newClient tự dựng
+// lại CSDL trắng ở mỗi lần gọi, nên dựng hai client riêng sẽ khiến client thứ hai xóa
+// mất dữ liệu client thứ nhất vừa tạo.
+func TestTriggerStatusOnlyNeedsAuth(t *testing.T) {
+	c := newClient(t)
+	c.login("owner")
+	id := newSourceID(t, c, "t-sync-viewer")
+	tid := int64(decodeBody[map[string]any](t,
+		c.do(http.MethodPost, "/api/sources/"+itoa(float64(id))+"/sync", nil))["trigger_id"].(float64))
+
+	c.login("viewer") // đăng nhập lại: cookie phiên chuyển sang tài khoản viewer
+	rec := c.do(http.MethodGet, "/api/triggers/"+itoa(float64(tid)), nil)
+	if rec.Code != http.StatusOK {
+		t.Errorf("viewer đọc trạng thái yêu cầu = %d, muốn 200: %s", rec.Code, rec.Body.String())
 	}
 }
 

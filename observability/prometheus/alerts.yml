@@ -78,6 +78,18 @@ groups:
         annotations:
           summary: "{{ $labels.tenant }}/{{ $labels.category }} mất hơn nửa số dòng so với hôm qua"
 
+  - name: admin-triggers
+    rules:
+      - alert: AdminTriggerFailing
+        # Một yêu cầu "chạy ngay" từ dashboard (đồng bộ/chấm điểm/phát hành) thất bại.
+        # Không phải khẩn cấp — chu kỳ theo lịch vẫn chạy bình thường song song — nhưng
+        # người bấm nút cần biết dashboard không im lặng nuốt lỗi.
+        expr: increase(cyberdns_admin_triggers_total{outcome="failed"}[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Yêu cầu chạy ngay loại {{ $labels.kind }} từ dashboard đang thất bại"
+
   - name: opencti-sync
     rules:
       - alert: OpenCTIStreamLag

@@ -136,6 +136,20 @@ docker compose down                   # dừng, GIỮ dữ liệu
 docker compose down -v                # dừng và XÓA SẠCH volume
 ```
 
+Cách trên là "búa tạ" — khởi động lại cả container chỉ để chạy một lượt thu thập. Dashboard
+quản trị (`https://localhost:9443`) có cách gọn hơn, không cần khởi động lại gì:
+
+- **Nguồn feed** → nút **Đồng bộ** trên từng nguồn (chỉ nguồn đó), hoặc **Đồng bộ tất cả**
+  ở đầu trang; **Dừng đồng bộ** / **Bật đồng bộ** để tạm ngắt một nguồn mà không phải mở
+  form sửa.
+- **Tổng quan** → nút **Cập nhật & phát hành ngay**: chấm điểm lại rồi dựng và phát hành
+  bộ blocklist mới, xong hai bước mới báo kết quả (an toàn khi bấm nhiều lần — bỏ qua nếu
+  dữ liệu không đổi).
+
+Cơ chế phía sau: admin-api chỉ ghi một hàng vào bảng `admin_triggers`; service tương ứng
+tự nhận và chạy trong vòng vài giây, xen kẽ với lượt theo lịch nhưng **không bao giờ chồng
+lấn** với nó — xem `internal/app.RunLoopWithTrigger`.
+
 `lab.sh` chỉ là tiện ích quanh những lệnh đó, cộng phần sinh bí mật:
 
 ```sh

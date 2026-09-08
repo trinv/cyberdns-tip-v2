@@ -69,6 +69,11 @@ type Schedule struct {
 	Interval time.Duration `yaml:"interval"`
 	// RunAtStart chạy ngay một lượt lúc khởi động thay vì chờ hết chu kỳ đầu.
 	RunAtStart bool `yaml:"run_at_start"`
+
+	// TriggerPoll là nhịp kiểm tra bảng admin_triggers để nhận yêu cầu "chạy ngay" từ
+	// dashboard. Ngắn để dashboard phản hồi nhanh, nhưng đây chỉ là một truy vấn có
+	// index nên vài giây một lần không đáng kể.
+	TriggerPoll time.Duration `yaml:"trigger_poll_interval"`
 }
 
 type Database struct {
@@ -194,6 +199,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Schedule.Interval == 0 {
 		c.Schedule.Interval = time.Hour
+	}
+	if c.Schedule.TriggerPoll == 0 {
+		c.Schedule.TriggerPoll = 3 * time.Second
 	}
 	if c.Public.CacheMaxAge == 0 {
 		c.Public.CacheMaxAge = 5 * time.Minute

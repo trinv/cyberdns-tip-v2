@@ -243,7 +243,8 @@ Docker, CI, metrics và luật cảnh báo.
 | `internal/builder` | Dựng snapshot theo tenant từ một lượt policy đã hoàn tất |
 | `internal/snapshot` | Publish nguyên tử ở mức bộ, gzip dựng sẵn, rollback |
 | `internal/blocklistsrv` | Phục vụ HTTP công khai: ETag/304, gzip |
-| `internal/adminapi` + `web/` | Dashboard quản trị, phiên lưu ở CSDL, RBAC, nhật ký |
+| `internal/adminapi` + `web/` | Dashboard quản trị, phiên lưu ở CSDL, RBAC, nhật ký, đồ thị donut theo category |
+| `internal/app.RunLoopWithTrigger` | Đồng bộ/chấm điểm/phát hành theo yêu cầu — chạy ngay từ dashboard, không chồng lấn với lượt theo lịch |
 
 **P4 đang làm.** Chiều OpenCTI -> PostgreSQL đã xong:
 

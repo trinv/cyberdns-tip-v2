@@ -31,6 +31,20 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+/** svgEl dựng phần tử SVG — cần namespace riêng, document.createElement không dùng được. */
+function svgEl(tag, attrs = {}, ...children) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    node.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children.flat()) {
+    if (c == null || c === false) continue;
+    node.appendChild(typeof c === "string" || typeof c === "number" ? text(c) : c);
+  }
+  return node;
+}
+
 function toast(message, kind = "") {
   const t = el("div", { class: `toast ${kind}` }, message);
   $("#toasts").appendChild(t);
@@ -83,6 +97,74 @@ async function api(path, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new HTTPError(res.status, data.error || `lỗi HTTP ${res.status}`);
   return data;
+}
+
+/**
+ * pollTrigger hỏi thăm một yêu cầu "chạy ngay" cho tới khi nó xong hoặc thất bại.
+ *
+ * feed-ingestor/policy-engine/blocklist-generator xử lý yêu cầu qua bảng CSDL, không
+ * có kết nối trực tiếp nào để đẩy tiến độ về trình duyệt — nên phải hỏi lại. 1.5s một
+ * lần là đủ nhanh để cảm giác "ngay", và đủ thưa để không đáng kể so với chu kỳ
+ * poll 3s của service.
+ */
+async function pollTrigger(id, onTick) {
+  for (;;) {
+    const t = await api(`/api/triggers/${id}`);
+    onTick?.(t);
+    if (t.status === "done" || t.status === "failed") return t;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
+// ------------------------------------------------------------------ đồ thị donut
+
+const CHART_COLORS = 8; // khớp .chart-color-1..8 trong app.css
+
+/** donutChart dựng SVG donut từ [ [nhãn, số lượng], ... ]. Không dùng thư viện: bảng
+ *  quản trị nội bộ không tải gì từ bên ngoài (xem TestNoExternalResourceLoads). */
+function donutChart(entries, { size = 168, thickness = 24 } = {}) {
+  const total = entries.reduce((sum, [, n]) => sum + n, 0);
+  const r = (size - thickness) / 2;
+  const c = size / 2;
+  const circumference = 2 * Math.PI * r;
+
+  const bg = svgEl("circle", {
+    cx: c, cy: c, r, fill: "none",
+    stroke: "var(--border)", "stroke-width": thickness,
+  });
+
+  const segments = [];
+  let offset = 0;
+  entries.forEach(([name, n], i) => {
+    if (n <= 0 || total <= 0) return;
+    const frac = n / total;
+    const len = frac * circumference;
+    segments.push(svgEl("circle", {
+      class: `chart-color-${(i % CHART_COLORS) + 1}`,
+      cx: c, cy: c, r, fill: "none",
+      "stroke-width": thickness,
+      "stroke-dasharray": `${len} ${circumference - len}`,
+      "stroke-dashoffset": String(-offset),
+      // Xoay để lát đầu tiên bắt đầu từ đỉnh 12 giờ thay vì 3 giờ (mặc định của SVG).
+      transform: `rotate(-90 ${c} ${c})`,
+    }, svgEl("title", {}, `${name}: ${fmtNum(n)} (${(frac * 100).toFixed(1)}%)`)));
+    offset += len;
+  });
+
+  return svgEl("svg", { viewBox: `0 0 ${size} ${size}`, width: size, height: size },
+    bg, segments);
+}
+
+/** donutLegend là chú giải màu đi kèm donutChart, cùng dữ liệu đầu vào. */
+function donutLegend(entries) {
+  const total = entries.reduce((sum, [, n]) => sum + n, 0);
+  return el("ul", { class: "legend" },
+    entries.map(([name, n], i) =>
+      el("li", {},
+        el("span", { class: `legend-dot chart-color-${(i % CHART_COLORS) + 1}` }),
+        el("span", { class: "legend-name" }, name),
+        el("span", { class: "legend-value" },
+          `${fmtNum(n)}${total ? ` (${((n / total) * 100).toFixed(1)}%)` : ""}`))));
 }
 
 // ------------------------------------------------------------------ icon
@@ -159,10 +241,19 @@ async function renderOverview(view) {
       `xem Lịch sử import để biết lý do.`));
   }
 
+  if (can("policy:write") && can("snapshot:write")) {
+    view.appendChild(renderPublishCard(o));
+  }
+
   const cats = Object.entries(o.blocked_by_category).sort((a, b) => b[1] - a[1]);
+  const nonZeroCats = cats.filter(([, n]) => n > 0);
   view.appendChild(
     el("div", { class: "card" },
       el("div", { class: "card-head" }, el("h2", {}, "Domain bị chặn theo category")),
+      el("div", { class: "cat-layout" },
+        nonZeroCats.length
+          ? el("div", { class: "donut-block" }, donutChart(nonZeroCats), donutLegend(nonZeroCats))
+          : el("div", { class: "empty" }, "Chưa có domain nào bị chặn.")),
       el("div", { class: "table-wrap" },
         el("table", {},
           el("thead", {}, el("tr", {},
@@ -176,23 +267,94 @@ async function renderOverview(view) {
                 el("td", { class: "num" }, fmtNum(n)),
                 el("td", {}, el("code", {}, `/blocklist/${name}.txt`)))))))),
   );
+}
 
-  view.appendChild(
-    el("div", { class: "card" },
-      el("div", { class: "card-body" },
-        el("div", { style: "font-size:13px; color:var(--t-muted)" },
-          "Lượt chấm điểm gần nhất: ",
-          el("strong", { style: "color:var(--t-base)" }, fmtTime(o.last_policy_run)),
-          o.last_policy_run ? ` (${relTime(o.last_policy_run)})` : ""))),
-  );
+/**
+ * renderPublishCard là nút "cập nhật blocklist": chấm điểm lại rồi dựng & phát hành,
+ * hai bước nối tiếp vì blocklist-generator chỉ dựng từ lượt policy đã hoàn tất gần
+ * nhất — dựng ngay mà chưa chấm điểm lại thường chỉ tái tạo đúng bộ cũ.
+ */
+function renderPublishCard(o) {
+  const status = el("div", { class: "op-status" });
+  const btn = el("button", { class: "btn primary sm", type: "button" }, "Cập nhật & phát hành ngay");
+
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    status.className = "op-status busy";
+    try {
+      status.textContent = "Đang chấm điểm lại…";
+      const { trigger_id: policyID } = await api("/api/policy/run", { method: "POST" });
+      const policyDone = await pollTrigger(policyID);
+      if (policyDone.status === "failed") {
+        throw new Error(policyDone.error_message || "chấm điểm lại thất bại");
+      }
+
+      status.textContent = "Đang dựng & phát hành blocklist…";
+      const { trigger_id: buildID } = await api("/api/blocklist/build", { method: "POST" });
+      const buildDone = await pollTrigger(buildID);
+      if (buildDone.status === "failed") {
+        throw new Error(buildDone.error_message || "dựng blocklist thất bại");
+      }
+
+      const r = buildDone.result || {};
+      toast(
+        r.Skipped
+          ? "Đã chấm điểm lại — dữ liệu không đổi, không có bản blocklist mới."
+          : `Đã phát hành bản blocklist mới: ${fmtNum(r.Entries)} domain (${r.Tenants} tenant).`,
+        "ok",
+      );
+      route();
+    } catch (err) {
+      toast(err.message, "bad");
+    } finally {
+      btn.disabled = false;
+      status.className = "op-status";
+      status.textContent = "";
+    }
+  });
+
+  return el("div", { class: "card" },
+    el("div", { class: "card-head" }, el("h2", {}, "Blocklist"), btn),
+    el("div", { class: "card-body" },
+      el("div", { style: "font-size:13px; color:var(--t-muted)" },
+        "Lượt chấm điểm gần nhất: ",
+        el("strong", { style: "color:var(--t-base)" }, fmtTime(o.last_policy_run)),
+        o.last_policy_run ? ` (${relTime(o.last_policy_run)})` : ""),
+      status));
+}
+
+/** syncButton là nút "Đồng bộ ngay" dùng chung cho một nguồn hoặc cho toàn bộ (id=null). */
+function syncButton(id, label) {
+  const btn = el("button", { class: "btn sm", type: "button" }, label);
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = "Đang đồng bộ…";
+    try {
+      const path = id == null ? "/api/sync" : `/api/sources/${id}/sync`;
+      const { trigger_id } = await api(path, { method: "POST" });
+      const t = await pollTrigger(trigger_id);
+      if (t.status === "failed") throw new Error(t.error_message || "đồng bộ thất bại");
+      toast(id == null ? "Đã đồng bộ xong toàn bộ nguồn." : "Đã đồng bộ xong.", "ok");
+      route();
+    } catch (err) {
+      toast(err.message, "bad");
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+  return btn;
 }
 
 async function renderSources(view) {
   const { sources } = await api("/api/sources");
+  const showActions = can("source:write") || can("source:sync");
 
   const head = el("div", { class: "card-head" },
     el("h2", {}, "Nguồn feed"),
-    can("source:write") && el("button", { class: "btn primary sm", onclick: () => sourceForm() }, "Thêm nguồn"));
+    el("div", { class: "actions" },
+      can("source:sync") && syncButton(null, "Đồng bộ tất cả"),
+      can("source:write") && el("button", { class: "btn primary sm", onclick: () => sourceForm() }, "Thêm nguồn")));
 
   const rows = (sources || []).map((s) => {
     const statusChip =
@@ -201,6 +363,25 @@ async function renderSources(view) {
       : s.last_status === "rejected" ? el("span", { class: "chip bad" }, "bị từ chối")
       : s.last_status === "failed" ? el("span", { class: "chip bad" }, "lỗi")
       : el("span", { class: "chip neutral" }, "chưa chạy");
+
+    // "Dừng/Bật đồng bộ" đặt lại enabled qua endpoint sửa nguồn đã có sẵn — không cần
+    // handler riêng, chỉ là một cách nhanh để bấm ngay từ bảng thay vì mở form sửa.
+    const toggleBtn = can("source:write") && el("button", {
+      class: "btn sm",
+      type: "button",
+      onclick: async (ev) => {
+        const b = ev.currentTarget;
+        b.disabled = true;
+        try {
+          await api(`/api/sources/${s.ID}`, { method: "PATCH", body: { enabled: !s.Enabled } });
+          toast(s.Enabled ? `Đã dừng đồng bộ ${s.Name}.` : `Đã bật đồng bộ ${s.Name}.`, "ok");
+          route();
+        } catch (err) {
+          toast(err.message, "bad");
+          b.disabled = false;
+        }
+      },
+    }, s.Enabled ? "Dừng đồng bộ" : "Bật đồng bộ");
 
     return el("tr", {},
       el("td", {},
@@ -219,8 +400,13 @@ async function renderSources(view) {
       el("td", { style: "white-space:nowrap; font-size:12px; color:var(--t-muted)" },
         relTime(s.last_run_at)),
       el("td", { class: "num" }, fmtNum(s.last_accepted)),
-      can("source:write") && el("td", {},
-        el("button", { class: "btn sm", onclick: () => sourceForm(s) }, "Sửa")));
+      showActions && el("td", {},
+        el("div", { class: "actions" },
+          // 'opencti' đồng bộ qua sync-consumer nghe Live Stream, không qua nút này —
+          // xem CLAUDE.md quy tắc chống vòng lặp phản hồi.
+          can("source:sync") && s.Enabled && s.Origin === "direct" && syncButton(s.ID, "Đồng bộ"),
+          toggleBtn,
+          can("source:write") && el("button", { class: "btn sm", onclick: () => sourceForm(s) }, "Sửa"))));
   });
 
   view.appendChild(
@@ -232,7 +418,7 @@ async function renderSources(view) {
             el("th", { class: "num" }, "Trust"), el("th", {}, "License"),
             el("th", {}, "Lần chạy gần nhất"), el("th", {}, "Khi nào"),
             el("th", { class: "num" }, "Bản ghi"),
-            can("source:write") && el("th", {}, ""))),
+            showActions && el("th", {}, ""))),
           rows.length
             ? el("tbody", {}, rows)
             : el("tbody", {}, el("tr", {}, el("td", { colspan: "9" },

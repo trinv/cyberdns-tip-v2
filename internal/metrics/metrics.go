@@ -36,6 +36,9 @@ type Metrics struct {
 	HTTPRequests    *prometheus.CounterVec
 	HTTPDurationSec *prometheus.HistogramVec
 
+	// --- Yêu cầu "chạy ngay" từ dashboard ---
+	AdminTriggers *prometheus.CounterVec
+
 	// --- OpenCTI sync-consumer ---
 	// StreamLagSec là độ trễ Live Stream. Vì OpenCTI nằm trong đường sinh blocklist,
 	// đây là chỉ số vận hành chứ không chỉ là chỉ số phân tích (kế hoạch §7.3).
@@ -141,6 +144,11 @@ func New(service, version string) *Metrics {
 			Buckets: prometheus.DefBuckets,
 		}, []string{"route"}),
 
+		AdminTriggers: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "cyberdns_admin_triggers_total",
+			Help: "Số yêu cầu chạy ngay từ dashboard, theo loại (sync/policy/build) và kết cục.",
+		}, []string{"kind", "outcome"}),
+
 		StreamLagSec: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "cyberdns_opencti_stream_lag_seconds",
 			Help: "Khoảng cách giữa thời điểm sự kiện OpenCTI và lúc áp dụng xong.",
@@ -163,6 +171,7 @@ func New(service, version string) *Metrics {
 		m.PolicyDecisions, m.PolicyRunDurationSec,
 		m.SnapshotBuildSec, m.SnapshotBytes, m.SnapshotEntries, m.SnapshotAgeSec,
 		m.SnapshotPublishes,
+		m.AdminTriggers,
 		m.HTTPRequests, m.HTTPDurationSec,
 		m.StreamLagSec, m.StreamEvents, m.StreamDrift,
 	)

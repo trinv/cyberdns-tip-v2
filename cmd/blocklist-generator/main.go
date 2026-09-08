@@ -3,6 +3,9 @@
 //
 // Việc dựng và việc phục vụ tách rời nhau: phần phục vụ chỉ đọc thư mục snapshot, nên
 // sự cố PostgreSQL không làm gián đoạn các URL — bộ đã publish gần nhất vẫn được trả về.
+//
+// Ngoài chu kỳ định kỳ, service còn lắng nghe yêu cầu "phát hành ngay" từ dashboard qua
+// bảng admin_triggers (kind='build') — xem internal/app.RunLoopWithTrigger.
 package main
 
 import (
@@ -57,18 +60,19 @@ func main() {
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 
-	go svc.RunLoop(runCtx, "build",
-		svc.Cfg.Schedule.Interval, svc.Cfg.Schedule.RunAtStart,
-		func(ctx context.Context, now time.Time) error {
-			_, err := build.Build(ctx, now)
-			// Chưa có lượt policy nào là trạng thái khởi đầu bình thường, không phải
-			// lỗi: hệ vừa dựng xong và chưa nạp nguồn nào.
-			if errors.Is(err, builder.ErrNoPolicyRun) {
-				svc.Log.Info("chưa có lượt policy nào, chưa dựng snapshot")
-				return nil
-			}
-			return err
-		})
+	job := func(ctx context.Context, now time.Time, _ *int64) (any, error) {
+		res, err := build.Build(ctx, now)
+		// Chưa có lượt policy nào là trạng thái khởi đầu bình thường, không phải lỗi:
+		// hệ vừa dựng xong và chưa nạp nguồn nào.
+		if errors.Is(err, builder.ErrNoPolicyRun) {
+			svc.Log.Info("chưa có lượt policy nào, chưa dựng snapshot")
+			return map[string]string{"status": "chưa có lượt policy nào"}, nil
+		}
+		return res, err
+	}
+
+	go svc.RunLoopWithTrigger(runCtx, "build", store.TriggerBuild, db,
+		svc.Cfg.Schedule.Interval, svc.Cfg.Schedule.TriggerPoll, svc.Cfg.Schedule.RunAtStart, job)
 
 	go trackSnapshotAge(runCtx, svc, snaps)
 

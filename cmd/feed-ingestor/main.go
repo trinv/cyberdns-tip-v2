@@ -3,10 +3,14 @@
 //
 // Một nguồn hỏng chỉ làm hỏng lần import của chính nó: dữ liệu cũ giữ nguyên, snapshot
 // đang phát hành không đổi, và chu kỳ vẫn chạy tiếp sang nguồn khác.
+//
+// Ngoài chu kỳ định kỳ, service còn lắng nghe yêu cầu "đồng bộ ngay" từ dashboard qua
+// bảng admin_triggers (kind='sync') — xem internal/app.RunLoopWithTrigger.
 package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -25,8 +29,9 @@ func main() {
 	}
 	defer svc.Close()
 
+	db := store.New(svc.Pool)
 	ing := &ingest.Ingestor{
-		DB:      store.New(svc.Pool),
+		DB:      db,
 		Fetcher: feed.NewFetcher(),
 		Metrics: svc.Metrics,
 		Log:     svc.Log,
@@ -35,16 +40,34 @@ func main() {
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 
-	go svc.RunLoop(runCtx, "ingest",
-		svc.Cfg.Schedule.Interval, svc.Cfg.Schedule.RunAtStart,
-		func(ctx context.Context, now time.Time) error {
-			results, err := ing.All(ctx, now)
+	job := func(ctx context.Context, now time.Time, sourceID *int64) (any, error) {
+		// sourceID != nil: dashboard yêu cầu đồng bộ đúng MỘT nguồn, không phải cả chu
+		// kỳ. Đường này bỏ qua cờ "enabled" một cách có chủ ý — thử một nguồn trước khi
+		// bật nó là cách hợp lý để kiểm tra URL/định dạng mà không cần chỉnh CSDL.
+		if sourceID != nil {
+			src, err := db.SourceByID(ctx, *sourceID)
 			if err != nil {
-				return err
+				return nil, err
 			}
-			svc.Log.Info("chu kỳ thu thập xong", "sources", len(results))
-			return nil
-		})
+			if src.Origin != "direct" {
+				return nil, fmt.Errorf(
+					"nguồn %q có origin=%q: feed-ingestor chỉ đồng bộ nguồn 'direct', "+
+						"nguồn 'opencti' đồng bộ qua sync-consumer", src.Name, src.Origin)
+			}
+			svc.Metrics.InitSource(src.Name)
+			return ing.One(ctx, src, now)
+		}
+
+		results, err := ing.All(ctx, now)
+		if err != nil {
+			return results, err
+		}
+		svc.Log.Info("chu kỳ thu thập xong", "sources", len(results))
+		return results, nil
+	}
+
+	go svc.RunLoopWithTrigger(runCtx, "ingest", store.TriggerSync, db,
+		svc.Cfg.Schedule.Interval, svc.Cfg.Schedule.TriggerPoll, svc.Cfg.Schedule.RunAtStart, job)
 
 	if err := svc.RunServers(ctx, svc.Ready(), nil); err != nil {
 		svc.Log.Error("thoát do lỗi", "err", err)

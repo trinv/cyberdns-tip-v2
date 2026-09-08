@@ -2,11 +2,13 @@ package adminapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/vnnic/cyberdns-tip/internal/domainname"
+	"github.com/vnnic/cyberdns-tip/internal/store"
 )
 
 // maxBody giới hạn kích thước thân yêu cầu. Không endpoint nào ở đây nhận dữ liệu lớn.
@@ -29,6 +31,19 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sources", a.authenticated("source:write", a.handleCreateSource))
 	mux.HandleFunc("PATCH /api/sources/{id}", a.authenticated("source:write", a.handleUpdateSource))
 	mux.HandleFunc("DELETE /api/sources/{id}", a.authenticated("source:write", a.handleDeleteSource))
+
+	// Yêu cầu "chạy ngay": admin-api chỉ ghi một hàng vào admin_triggers rồi trả về
+	// ngay — nó không tự chạy việc đồng bộ/chấm điểm/dựng blocklist. Service tương ứng
+	// (feed-ingestor, policy-engine, blocklist-generator) tự poll và xử lý, xem
+	// internal/app.RunLoopWithTrigger. "source:sync" nằm dưới quyền "source:*" theo
+	// đúng ngữ nghĩa wildcard nên không cần thêm gì cho vai trò operator.
+	mux.HandleFunc("POST /api/sources/{id}/sync", a.authenticated("source:sync", a.handleSyncSource))
+	mux.HandleFunc("POST /api/sync", a.authenticated("source:sync", a.handleSyncAll))
+	mux.HandleFunc("POST /api/policy/run", a.authenticated("policy:write", a.handleRunPolicy))
+	mux.HandleFunc("POST /api/blocklist/build", a.authenticated("snapshot:write", a.handleBuildBlocklist))
+	// Trạng thái một yêu cầu: chỉ cần đăng nhập, không cần quyền tạo ra loại yêu cầu
+	// đó — biết "đồng bộ xong chưa" không phải thông tin nhạy cảm.
+	mux.HandleFunc("GET /api/triggers/{id}", a.authenticated("", a.handleTriggerStatus))
 
 	mux.HandleFunc("GET /api/imports", a.authenticated("import:read", a.handleImports))
 
@@ -226,6 +241,131 @@ func (a *API) handleDeleteSource(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "source.purge", "source", strconv.FormatInt(id, 10), before, nil)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------- yêu cầu chạy ngay
+
+// triggerResponse là hình dạng JSON trả về cho dashboard khi hỏi trạng thái một yêu
+// cầu. Tách khỏi store.Trigger vì đây là hợp đồng với giao diện (snake_case, Result là
+// JSON thô thay vì chuỗi) chứ không phải hình dạng lưu trữ.
+type triggerResponse struct {
+	ID           int64           `json:"id"`
+	Kind         string          `json:"kind"`
+	SourceID     *int64          `json:"source_id"`
+	SourceName   string          `json:"source_name"`
+	Status       string          `json:"status"`
+	RequestedBy  string          `json:"requested_by"`
+	RequestedAt  time.Time       `json:"requested_at"`
+	ClaimedAt    *time.Time      `json:"claimed_at"`
+	CompletedAt  *time.Time      `json:"completed_at"`
+	Result       json.RawMessage `json:"result,omitempty"`
+	ErrorMessage string          `json:"error_message,omitempty"`
+}
+
+func toTriggerResponse(t store.Trigger) triggerResponse {
+	resp := triggerResponse{
+		ID: t.ID, Kind: t.Kind, SourceID: t.SourceID, SourceName: t.SourceName,
+		Status: t.Status, RequestedBy: t.RequestedBy, RequestedAt: t.RequestedAt,
+		ClaimedAt: t.ClaimedAt, CompletedAt: t.CompletedAt, ErrorMessage: t.ErrorMessage,
+	}
+	if t.Result != "" {
+		resp.Result = json.RawMessage(t.Result)
+	}
+	return resp
+}
+
+// handleSyncSource yêu cầu feed-ingestor đồng bộ NGAY một nguồn, không chờ hết chu kỳ.
+func (a *API) handleSyncSource(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	src, err := a.DB.SourceByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "không có nguồn này")
+		return
+	}
+	if src.Origin != "direct" {
+		writeError(w, http.StatusBadRequest,
+			"nguồn origin='"+src.Origin+"' không đồng bộ qua đường này")
+		return
+	}
+
+	user := userOf(r.Context())
+	tid, created, err := a.DB.EnqueueTrigger(r.Context(), store.TriggerSync, &id, user.Email)
+	if err != nil {
+		a.fail(w, "tạo yêu cầu đồng bộ", err)
+		return
+	}
+	if created {
+		a.audit(r, "source.sync", "source", strconv.FormatInt(id, 10), nil, nil)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"trigger_id": tid})
+}
+
+// handleSyncAll yêu cầu feed-ingestor chạy ngay một chu kỳ đồng bộ toàn bộ nguồn.
+func (a *API) handleSyncAll(w http.ResponseWriter, r *http.Request) {
+	user := userOf(r.Context())
+	tid, created, err := a.DB.EnqueueTrigger(r.Context(), store.TriggerSync, nil, user.Email)
+	if err != nil {
+		a.fail(w, "tạo yêu cầu đồng bộ", err)
+		return
+	}
+	if created {
+		a.audit(r, "source.sync_all", "source", "", nil, nil)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"trigger_id": tid})
+}
+
+// handleRunPolicy yêu cầu policy-engine chấm điểm lại NGAY, không chờ hết chu kỳ.
+//
+// Bước đầu của việc "cập nhật blocklist": build.Build chỉ dựng từ lượt policy đã hoàn
+// tất gần nhất, nên dựng lại mà chưa chấm điểm lại thường chỉ tái tạo đúng bộ cũ.
+func (a *API) handleRunPolicy(w http.ResponseWriter, r *http.Request) {
+	user := userOf(r.Context())
+	tid, created, err := a.DB.EnqueueTrigger(r.Context(), store.TriggerPolicy, nil, user.Email)
+	if err != nil {
+		a.fail(w, "tạo yêu cầu chấm điểm lại", err)
+		return
+	}
+	if created {
+		a.audit(r, "policy.run", "policy_run", "", nil, nil)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"trigger_id": tid})
+}
+
+// handleBuildBlocklist yêu cầu blocklist-generator dựng và phát hành bộ snapshot NGAY.
+//
+// An toàn khi bấm nhiều lần: Build() tự phát hiện dữ liệu không đổi và bỏ qua, không
+// tạo ra bộ trùng lặp.
+func (a *API) handleBuildBlocklist(w http.ResponseWriter, r *http.Request) {
+	user := userOf(r.Context())
+	tid, created, err := a.DB.EnqueueTrigger(r.Context(), store.TriggerBuild, nil, user.Email)
+	if err != nil {
+		a.fail(w, "tạo yêu cầu phát hành", err)
+		return
+	}
+	if created {
+		a.audit(r, "blocklist.build", "snapshot", "", nil, nil)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"trigger_id": tid})
+}
+
+func (a *API) handleTriggerStatus(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	t, err := a.DB.TriggerStatus(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrTriggerNotFound) {
+			writeError(w, http.StatusNotFound, "không có yêu cầu này")
+			return
+		}
+		a.fail(w, "đọc trạng thái yêu cầu", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toTriggerResponse(t))
 }
 
 // ---------------------------------------------------------------- lịch sử import

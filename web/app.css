@@ -37,6 +37,21 @@
   --danger:  #ef4444;  --danger-soft:  #fef2f2;
   --info:    #0ea5e9;  --info-soft:    #f0f9ff;
   --purple:  #8b5cf6;  --purple-soft:  #f5f3ff;
+  --teal:    #14b8a6;
+  --pink:    #ec4899;
+
+  /* Bảng màu cho đồ thị phân loại (donut theo category) — 8 màu, đủ cho tập category
+     mặc định. Không dùng lại nguyên xi các token ngữ nghĩa (success/danger/...) làm
+     tên biến riêng: ở đây thứ tự và số lượng mới là điều quan trọng, không phải ý
+     nghĩa "thành công hay lỗi" của từng màu. */
+  --chart-1: var(--primary);
+  --chart-2: var(--pink);
+  --chart-3: var(--warning);
+  --chart-4: var(--teal);
+  --chart-5: var(--purple);
+  --chart-6: var(--danger);
+  --chart-7: var(--info);
+  --chart-8: var(--success);
 
   --shadow-sm: 0 1px 2px 0 rgb(15 23 42 / 0.04);
   --shadow-card: 0 1px 3px 0 rgb(15 23 42 / 0.06), 0 1px 2px -1px rgb(15 23 42 / 0.04);
@@ -68,6 +83,8 @@
   --danger:  #f87171;  --danger-soft:  #2b1414;
   --info:    #38bdf8;  --info-soft:    #0b2b3d;
   --purple:  #a78bfa;  --purple-soft:  #211a3d;
+  --teal:    #2dd4bf;
+  --pink:    #f472b6;
 
   --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.4);
   --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.5);
@@ -375,6 +392,58 @@ input:focus, select:focus, textarea:focus {
   font-size: 11.5px;
   color: var(--t-muted);
 }
+
+/* ============================================================ đồ thị */
+
+.cat-layout {
+  display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start;
+  padding: 20px; border-bottom: 1px solid var(--border-soft);
+}
+.donut-block { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+.donut-block svg { flex-shrink: 0; }
+
+.legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.legend li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.legend-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
+}
+.legend-name { color: var(--t-base); font-weight: 550; min-width: 84px; }
+.legend-value { color: var(--t-muted); }
+
+/* Lớp màu cho từng lát donut. Gán qua class thay vì stroke="var(--chart-N)" trực
+   tiếp: thuộc tính XML thường của SVG không tự resolve custom property CSS, chỉ
+   thuộc tính "style" (hoặc quy tắc CSS như dưới đây) mới làm được. */
+.chart-color-1 { stroke: var(--chart-1); }
+.chart-color-2 { stroke: var(--chart-2); }
+.chart-color-3 { stroke: var(--chart-3); }
+.chart-color-4 { stroke: var(--chart-4); }
+.chart-color-5 { stroke: var(--chart-5); }
+.chart-color-6 { stroke: var(--chart-6); }
+.chart-color-7 { stroke: var(--chart-7); }
+.chart-color-8 { stroke: var(--chart-8); }
+.legend-dot.chart-color-1 { background: var(--chart-1); }
+.legend-dot.chart-color-2 { background: var(--chart-2); }
+.legend-dot.chart-color-3 { background: var(--chart-3); }
+.legend-dot.chart-color-4 { background: var(--chart-4); }
+.legend-dot.chart-color-5 { background: var(--chart-5); }
+.legend-dot.chart-color-6 { background: var(--chart-6); }
+.legend-dot.chart-color-7 { background: var(--chart-7); }
+.legend-dot.chart-color-8 { background: var(--chart-8); }
+
+/* ============================================================ thao tác nhanh */
+
+.actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.op-status {
+  font-size: 12.5px; color: var(--t-muted); margin-top: 10px;
+  display: flex; align-items: center; gap: 8px; min-height: 18px;
+}
+.op-status.busy::before {
+  content: ""; width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+  border: 2px solid var(--border); border-top-color: var(--primary);
+  animation: spin 700ms linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ============================================================ responsive */
 
