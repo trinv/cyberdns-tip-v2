@@ -47,8 +47,7 @@ services:
       context: ../..
       dockerfile: Dockerfile
       args:
-        SERVICE: feed-ingestor
-    command: ["-config", "/etc/cyberdns-tip/configs/feed-ingestor.yaml"]
+    command: ["/usr/local/bin/feed-ingestor", "-config", "/etc/cyberdns-tip/configs/feed-ingestor.yaml"]
     environment:
       <<: *service-env
       TIP_OPS_ADDR: "0.0.0.0:9101"
@@ -61,8 +60,7 @@ services:
       context: ../..
       dockerfile: Dockerfile
       args:
-        SERVICE: policy-engine
-    command: ["-config", "/etc/cyberdns-tip/configs/policy-engine.yaml"]
+    command: ["/usr/local/bin/policy-engine", "-config", "/etc/cyberdns-tip/configs/policy-engine.yaml"]
     environment:
       <<: *service-env
       TIP_OPS_ADDR: "0.0.0.0:9102"
@@ -73,8 +71,7 @@ services:
       context: ../..
       dockerfile: Dockerfile
       args:
-        SERVICE: blocklist-generator
-    command: ["-config", "/etc/cyberdns-tip/configs/blocklist-generator.yaml"]
+    command: ["/usr/local/bin/blocklist-generator", "-config", "/etc/cyberdns-tip/configs/blocklist-generator.yaml"]
     environment:
       <<: *service-env
       TIP_OPS_ADDR: "0.0.0.0:9103"
@@ -87,13 +84,31 @@ services:
       context: ../..
       dockerfile: Dockerfile
       args:
-        SERVICE: admin-api
-    command: ["-config", "/etc/cyberdns-tip/configs/admin-api.yaml"]
+    command: ["/usr/local/bin/admin-api", "-config", "/etc/cyberdns-tip/configs/admin-api.yaml"]
     environment:
       <<: *service-env
       TIP_OPS_ADDR: "0.0.0.0:9104"
     ports:
       - "127.0.0.1:9104:9104"
+
+  # Nghe OpenCTI Live Stream và ghi kết quả xuống L1.
+  #
+  # Khởi động được cả khi CHƯA bật OpenCTI: thiếu url hoặc token thì service đứng yên
+  # và vẫn trả /healthz. OpenCTI là thành phần tùy chọn, nên thoát vì thiếu cấu hình sẽ
+  # khiến container quay vòng khởi động lại mãi và làm nhiễu mọi dashboard, trong khi
+  # phần còn lại của hệ vẫn chạy hoàn toàn bình thường.
+  sync-consumer:
+    <<: *service-base
+    command: ["/usr/local/bin/sync-consumer", "-config", "/etc/cyberdns-tip/configs/sync-consumer.yaml"]
+    environment:
+      <<: *service-env
+      TIP_OPS_ADDR: "0.0.0.0:9105"
+      # Rỗng khi chưa bật OpenCTI. Lớp phủ docker-compose.opencti.yml điền các giá trị
+      # thật khi cụm OpenCTI được khởi động.
+      TIP_OPENCTI_URL: ${TIP_OPENCTI_URL:-}
+      TIP_OPENCTI_TOKEN: ${OPENCTI_ADMIN_TOKEN:-}
+      TIP_OPENCTI_STREAM_ID: ${TIP_OPENCTI_STREAM_ID:-}
+
 
   prometheus:
     image: prom/prometheus:latest

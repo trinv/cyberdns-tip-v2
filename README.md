@@ -40,10 +40,10 @@ Nguyên lý nền: dữ liệu chia 4 tầng, **chỉ tầng bằng chứng là 
 ## Cấu trúc
 
 ```
-cmd/            4 service Go
+cmd/            5 service Go
 internal/       code dùng chung (config, db, metrics, httpx, app)
 migrations/     lược đồ SQL, nhúng vào binary
-connectors/     connector Python cho OpenCTI (P4)
+connectors/     connector đẩy dữ liệu ngược vào OpenCTI (chưa viết)
 configs/        cấu hình mẫu theo service
 deploy/         docker-compose
 observability/  Prometheus + luật cảnh báo
@@ -200,27 +200,46 @@ Giao diện chỉ lắng nghe trên `127.0.0.1:8081` của máy chủ, **không 
 cập qua `ssh -L 8081:127.0.0.1:8081 user@may-chu`. Cần tối thiểu 16 GB RAM (32 GB để
 thoải mái) ngoài phần stack chính đang dùng.
 
-**OpenCTI hiện chưa nối vào đường sinh blocklist.** Nó chạy và dùng được giao diện,
-nhưng `opencti-connector` và `sync-consumer` — hai thành phần nối nó với PostgreSQL —
-thuộc P4 và chưa được viết.
+Chiều **OpenCTI -> blocklist** đã thông: service `sync-consumer` nghe Live Stream và ghi
+xuống L0/L1, nên thu hồi một indicator trong OpenCTI sẽ gỡ chặn domain tương ứng ở lượt
+policy kế tiếp. Chiều ngược lại (`opencti-connector`, đẩy dữ liệu canonical vào OpenCTI
+dưới dạng STIX 2.1) chưa viết.
+
+Dữ liệu quay về từ OpenCTI mang `origin='opencti'` và **không** được tính vào phép đếm
+nguồn độc lập. Không có quy tắc đó, một domain đi vòng qua OpenCTI rồi quay lại sẽ tự
+thưởng cho mình một xác nhận ảo và vượt ngưỡng chặn mà không nguồn nào thật sự xác nhận
+thêm.
 
 Chi tiết tài nguyên, truy cập, sao lưu và nâng cấp: [deploy/opencti/README.md](deploy/opencti/README.md).
 
 ## Trạng thái
 
-**P0 hoàn tất** — khung repo, lược đồ đầy đủ L0–L3, cấu hình, metrics, CI, compose.
-
-**P1 đang làm.** Đã xong và có test:
+**P0–P3 hoàn tất.** Lược đồ đầy đủ L0–L3, năm service, dashboard quản trị, đóng gói
+Docker, CI, metrics và luật cảnh báo.
 
 | Package | Vai trò |
 |---|---|
 | `internal/domainname` | Chuẩn hóa tất định, một hàm duy nhất cho mọi nguồn |
 | `internal/psl` | Hàng rào public suffix — chặn `com`, `vn`, `com.vn` |
+| `internal/feed` | Tải có điều kiện, parser streaming, kiểm tra toàn vẹn |
+| `internal/store` | L0/L1: staging + COPY, hợp nhất giao hoán, grace period |
 | `internal/policy` | Thang ưu tiên 8 nấc, hàm thuần |
 | `internal/render` | Rút gọn cha/con, định dạng đầu ra |
+| `internal/builder` | Dựng snapshot theo tenant từ một lượt policy đã hoàn tất |
 | `internal/snapshot` | Publish nguyên tử ở mức bộ, gzip dựng sẵn, rollback |
-| `internal/feed` | Tải có điều kiện, parser streaming, kiểm tra toàn vẹn |
 | `internal/blocklistsrv` | Phục vụ HTTP công khai: ETag/304, gzip |
+| `internal/adminapi` + `web/` | Dashboard quản trị, phiên lưu ở CSDL, RBAC, nhật ký |
 
-Còn lại của P1: tầng lưu trữ L0/L1 (staging + COPY, upsert giao hoán, grace period),
-vòng chạy policy ghi L2, và nối generator để dựng snapshot từ PostgreSQL.
+**P4 đang làm.** Chiều OpenCTI -> PostgreSQL đã xong:
+
+| Package | Vai trò |
+|---|---|
+| `internal/opencti` | Phân tích STIX pattern và khung SSE, hàm thuần |
+| `internal/syncconsumer` | Điều phối sự kiện: create/update/delete/**merge**, chống phát lại |
+
+Còn lại của P4: `opencti-connector` (chiều ngược lại) và job đối soát định kỳ qua GraphQL
+cho trường hợp consumer ngừng lâu hơn cửa sổ lưu của stream.
+
+Sau đó: P5 nạp cấu hình policy từ CSDL và shadow mode; P6 renderer cắm được (hosts,
+AdGuard, RPZ); P7 benchmark 10M, HA, sao lưu/PITR, rà soát bảo mật và giấy phép nguồn dữ
+liệu trước khi mở dịch vụ ra ngoài VNNIC.

@@ -153,20 +153,44 @@ chết lại. Trên WSL thì đặt giá trị này **trong WSL**, không phải
 **Thời gian.** Tải image mất vài GB. Lần khởi động đầu OpenCTI phải tạo toàn bộ chỉ mục
 Elasticsearch và nạp dữ liệu nền — vài phút là bình thường, script chờ tối đa 15 phút.
 
-### Trạng thái tích hợp
+### Đường dữ liệu OpenCTI -> blocklist
 
-**OpenCTI hiện chưa nối vào đường sinh blocklist.** Nó chạy được, dùng được giao diện,
-nhập và xuất STIX được — nhưng hai thành phần nối nó với PostgreSQL vẫn thuộc P4 và chưa
-được viết:
+Sau khi `./deploy/lab.sh opencti` chạy xong, script tự bật nguồn `opencti` trong CSDL và
+dựng lại `sync-consumer` để nó nhận URL và token vừa sinh. Từ lúc đó:
 
 | Thành phần | Vai trò | Trạng thái |
 |---|---|---|
-| `opencti-connector` | canonical record → STIX 2.1 đẩy vào OpenCTI | chưa viết |
-| `sync-consumer` | Live Stream → PostgreSQL | chưa viết |
+| `sync-consumer` | OpenCTI Live Stream -> PostgreSQL (L0/L1) | đã có |
+| `opencti-connector` | canonical -> STIX 2.1 đẩy vào OpenCTI | chưa viết |
 
-Lược đồ và policy đã sẵn sàng đón dữ liệu: cột `sources.origin`, `domain_sources.revoked_at`
-và `valid_until`, nấc 5 `opencti_revoked` trong thang ưu tiên, cùng quy tắc chỉ đếm
-nguồn `origin='direct'` để chặn vòng lặp phản hồi. Nhưng chưa có gì chảy qua.
+Kiểm tra nó đang chạy:
+
+```sh
+./deploy/lab.sh logs sync-consumer
+```
+
+Dòng cần thấy là `bắt đầu nghe OpenCTI Live Stream`. Nếu thay vào đó là `OpenCTI chưa cấu
+hình` hoặc `chưa bật nguồn OpenCTI`, service đang **đứng yên có chủ đích** chứ không hỏng
+— xem phần xử lý sự cố bên dưới.
+
+**Thử một vòng đầu-cuối.** Trong OpenCTI, tạo một Indicator với pattern
+`[domain-name:value = 'test-tip.example.com']`, gắn nhãn `malware`. Trong vòng vài giây
+domain sẽ xuất hiện ở L1; sau lượt policy và lượt dựng snapshot kế tiếp nó có mặt trong
+`malware.txt`. Rút ngắn chờ đợi bằng cách hạ `TIP_POLICY_INTERVAL` và `TIP_BUILD_INTERVAL`
+trong `.env.lab`.
+
+Rồi bấm **Revoke** trên chính indicator đó: ở lượt policy kế tiếp domain **rời khỏi**
+blocklist với `reason_code = opencti_revoked`, kể cả khi các feed khác vẫn liệt kê nó.
+Đó là nấc 5 của thang ưu tiên, và là lý do tồn tại của cả đường dữ liệu này.
+
+**Nhãn quyết định category.** Ánh xạ nhãn sang category nằm ở `configs/sync-consumer.yaml`,
+mục `opencti.label_categories`. Nhãn không có trong bảng đó thì indicator rơi về category
+mặc định của nguồn — không bị bỏ đi.
+
+**Dữ liệu quay về từ OpenCTI không được tính là xác nhận độc lập.** Nguồn `opencti` có
+`origin='opencti'`, và phép đếm nguồn độc lập chỉ đếm `origin='direct'`. Không có quy tắc
+đó, một domain đi vòng qua OpenCTI rồi quay lại sẽ tự thưởng cho mình một nguồn ảo và
+vượt ngưỡng chặn mà không nguồn nào thật sự xác nhận thêm.
 
 ### Tắt OpenCTI, giữ stack chính
 
@@ -193,6 +217,16 @@ không bị ảnh hưởng.
 sử import** sẽ ghi rõ lý do. Các lý do hay gặp: feed rỗng, phản hồi bị cắt cụt, tỉ lệ
 dòng lỗi vượt ngưỡng, hoặc số bản ghi biến động quá lớn so với lần trước. Dữ liệu cũ và
 snapshot đang phát hành **không bị ảnh hưởng**.
+
+**`sync-consumer` báo "đứng yên".** Đây là hành vi có chủ đích, không phải lỗi. Ba
+nguyên nhân, nhật ký nói rõ nguyên nhân nào:
+
+- `OpenCTI chưa cấu hình` — chưa chạy `./deploy/lab.sh opencti`.
+- `chưa bật nguồn OpenCTI` — hàng `opencti` trong bảng `sources` đang tắt. Bật trên
+  dashboard ở mục Nguồn dữ liệu, hoặc chạy lại `./deploy/lab.sh opencti`.
+- Thoát hẳn với thông báo về `origin` — hàng `sources` tên `opencti` có `origin` khác
+  `'opencti'`. Đây là lỗi cấu hình nghiêm trọng: nó sẽ khiến dữ liệu quay về từ OpenCTI
+  bị tính thành nguồn độc lập và làm lạm phát điểm.
 
 **Đăng nhập thất bại sau khi `reset`.** `reset` xóa cả tài khoản. Chạy `up` để tạo lại.
 

@@ -13,3 +13,6 @@ scrape_configs:
           - policy-engine:9102
           - blocklist-generator:9103
           - admin-api:9104
+          # Chỉ trả số liệu khi OpenCTI đã bật; trước đó service vẫn chạy và vẫn scrape
+          # được, chỉ là các bộ đếm stream đứng yên ở 0.
+          - sync-consumer:9105

@@ -273,6 +273,23 @@ services:
     depends_on:
       - opencti
 
+  # Nối sync-consumer của stack chính vào instance OpenCTI vừa dựng.
+  #
+  # Chỉ ghi đè phần cấu hình, không định nghĩa lại service: định nghĩa đầy đủ nằm ở
+  # compose chính, và lặp lại nó ở đây sẽ tạo ra hai bản dễ lệch nhau.
+  #
+  # Dùng token quản trị vì đây là cài đặt nội bộ. Khi mở dịch vụ ra ngoài VNNIC thì
+  # phải tạo một tài khoản riêng chỉ có quyền đọc stream: token quản trị mở toàn bộ
+  # kho tri thức tình báo, kể cả phần chưa công bố.
+  sync-consumer:
+    environment:
+      TIP_OPENCTI_URL: http://opencti:8080
+      TIP_OPENCTI_TOKEN: ${OPENCTI_ADMIN_TOKEN:?cần đặt OPENCTI_ADMIN_TOKEN}
+      TIP_OPENCTI_STREAM_ID: ${TIP_OPENCTI_STREAM_ID:-}
+    depends_on:
+      opencti:
+        condition: service_started
+
 volumes:
   esdata:
   redisdata:

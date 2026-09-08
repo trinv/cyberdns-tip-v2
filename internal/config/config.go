@@ -26,6 +26,41 @@ type Config struct {
 	Public   Public   `yaml:"public"`
 	Snapshot Snapshot `yaml:"snapshot"`
 	Schedule Schedule `yaml:"schedule"`
+	OpenCTI  OpenCTI  `yaml:"opencti"`
+}
+
+// OpenCTI là cấu hình của sync-consumer.
+//
+// Token KHÔNG bao giờ nằm trong file: nó đi qua ${TIP_OPENCTI_TOKEN}. Một token OpenCTI
+// mở toàn bộ kho tri thức tình báo, kể cả phần chưa công bố.
+type OpenCTI struct {
+	// URL là địa chỉ gốc của OpenCTI, ví dụ http://opencti:8080.
+	URL   string `yaml:"url"`
+	Token string `yaml:"token"`
+
+	// StreamID là live stream cần nghe. Rỗng nghĩa là stream mặc định của instance.
+	StreamID string `yaml:"stream_id"`
+
+	// SourceName là tên hàng trong bảng sources đại diện cho OpenCTI. Nguồn đó phải có
+	// origin='opencti', nếu không phép đếm nguồn độc lập sẽ bị lạm phát (xung đột B3).
+	SourceName string `yaml:"source_name"`
+
+	// LabelCategories ánh xạ nhãn OpenCTI sang tên category.
+	//
+	// Đây là chỗ hiện thực phân vai đã chốt: OpenCTI quyết định nhóm CTI, hệ này chỉ
+	// dịch nhãn của nó sang tên file blocklist.
+	LabelCategories map[string][]string `yaml:"label_categories"`
+
+	// CheckpointEvery và CheckpointAfter quyết định nhịp ghi checkpoint.
+	CheckpointEvery int           `yaml:"checkpoint_every"`
+	CheckpointAfter time.Duration `yaml:"checkpoint_after"`
+
+	MinBackoff time.Duration `yaml:"min_backoff"`
+	MaxBackoff time.Duration `yaml:"max_backoff"`
+
+	// MaxCatchUp là khoảng ngừng tối đa còn nối lại được bằng id sự kiện. Ngừng lâu hơn
+	// thì id đã rơi khỏi cửa sổ lưu của stream và phải phát lại theo mốc thời gian.
+	MaxCatchUp time.Duration `yaml:"max_catch_up"`
 }
 
 // Schedule là chu kỳ chạy của vòng lặp công việc.
@@ -165,6 +200,27 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Snapshot.Root == "" {
 		c.Snapshot.Root = "/var/lib/cyberdns-tip/snapshots"
+	}
+	if c.OpenCTI.SourceName == "" {
+		c.OpenCTI.SourceName = "opencti"
+	}
+	if c.OpenCTI.CheckpointEvery == 0 {
+		c.OpenCTI.CheckpointEvery = 100
+	}
+	if c.OpenCTI.CheckpointAfter == 0 {
+		c.OpenCTI.CheckpointAfter = 10 * time.Second
+	}
+	if c.OpenCTI.MinBackoff == 0 {
+		c.OpenCTI.MinBackoff = time.Second
+	}
+	if c.OpenCTI.MaxBackoff == 0 {
+		c.OpenCTI.MaxBackoff = 2 * time.Minute
+	}
+	if c.OpenCTI.MaxCatchUp == 0 {
+		// OpenCTI giữ stream trong Redis với cửa sổ hữu hạn. Ngừng lâu hơn thì id sự
+		// kiện đã rơi khỏi cửa sổ và nối lại theo id sẽ im lặng bắt đầu từ hiện tại,
+		// bỏ trống đúng khoảng thời gian consumer đã chết.
+		c.OpenCTI.MaxCatchUp = 24 * time.Hour
 	}
 	if c.Snapshot.Keep == 0 {
 		// Giữ ít nhất vài bộ: rollback (kế hoạch §4.4) cần bản trước còn trên đĩa.

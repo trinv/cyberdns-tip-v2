@@ -10,18 +10,26 @@ sudo ./deploy/install-opencti.sh
 
 ## Trạng thái tích hợp
 
-**OpenCTI hiện chưa nối vào đường sinh blocklist.** Nó chạy được, dùng được giao diện,
-nhập/xuất STIX được — nhưng hai thành phần nối nó với PostgreSQL vẫn thuộc P4 và chưa
-được viết:
+Chiều **OpenCTI → blocklist** đã thông. Chiều ngược lại chưa:
 
 | Thành phần | Vai trò | Trạng thái |
 |---|---|---|
+| `sync-consumer` | Live Stream → PostgreSQL, ghi các hàng của nguồn `origin='opencti'` | đã có |
 | `opencti-connector` | canonical record → STIX 2.1 bundle đẩy vào OpenCTI | chưa viết |
-| `sync-consumer` | Live Stream → PostgreSQL, ghi các hàng `source_id='opencti'` | chưa viết |
 
-Lược đồ và policy đã sẵn sàng đón dữ liệu: `sources.origin`, `domain_sources.revoked_at`
-và `valid_until`, nấc 5 `opencti_revoked` trong thang ưu tiên, và quy tắc chỉ đếm nguồn
-`origin='direct'` để chặn vòng lặp phản hồi.
+Nghĩa là: thu hồi (`revoked`) một indicator trong OpenCTI sẽ gỡ chặn domain tương ứng ở
+lượt policy kế tiếp, kể cả khi nhiều feed vẫn còn liệt kê nó — đó là nấc 5
+`opencti_revoked` của thang ưu tiên. Nhưng dữ liệu từ các feed chưa tự động xuất hiện
+trong OpenCTI; muốn thấy chúng ở đó thì hiện phải nhập STIX thủ công.
+
+Hai bất biến mà đường này giữ:
+
+- Hàng của nguồn OpenCTI mang `origin='opencti'` và **không** được tính vào phép đếm
+  nguồn độc lập. Thiếu quy tắc đó, một domain đi vòng qua OpenCTI rồi quay lại sẽ tự
+  thưởng cho mình một xác nhận ảo.
+- `revoked` (phủ định tường minh, triệt tiêu mọi nguồn) khác hẳn `valid_until` hết hạn
+  (phân rã thụ động, chỉ rút đóng góp của riêng OpenCTI). Nhầm hai thứ này sẽ gỡ chặn
+  hàng loạt ngoài ý muốn.
 
 ## Yêu cầu tài nguyên
 
@@ -121,5 +129,8 @@ Nâng cấp: đổi `OPENCTI_VERSION` trong `.env.opencti`, đọc release note 
 migration, rồi `docker compose $C up -d`. Sao lưu `esdata` trước — không hạ cấp được.
 
 Chỉ số cần theo dõi (đã có sẵn trong Prometheus và luật cảnh báo):
-`cyberdns_opencti_stream_lag_seconds` và `cyberdns_opencti_reconcile_drift`. Cả hai chỉ
-có dữ liệu sau khi `sync-consumer` của P4 được viết.
+`cyberdns_opencti_stream_lag_seconds` có dữ liệu ngay khi `sync-consumer` bắt đầu nhận
+sự kiện; `cyberdns_opencti_reconcile_drift` đứng yên ở 0 cho tới khi job đối soát GraphQL
+được viết. Thêm `cyberdns_opencti_stream_events_total` tách theo loại sự kiện và kết cục
+(`applied` / `skipped` / `stale` / `failed`) — `skipped` cao là bình thường, vì luồng CTI
+chở nhiều thứ không phải tên miền.

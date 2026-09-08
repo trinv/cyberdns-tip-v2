@@ -419,6 +419,14 @@ $BOLD Cài đặt xong.$RESET
 
   Sao lưu ngay $COMPOSE_DIR/.env — mất POSTGRES_PASSWORD là mất dữ liệu.
 
+  sync-consumer đang chạy nhưng ĐỨNG YÊN vì chưa có OpenCTI — đó là hành vi đúng, không
+  phải lỗi. Muốn có tầng Threat Intelligence thì chạy:
+
+      sudo ./deploy/install-opencti.sh
+
+  Script đó dựng OpenCTI, bật nguồn 'opencti' và nối sync-consumer vào Live Stream.
+  Cần thêm khoảng 16 GB RAM.
+
 EOF
 }
 

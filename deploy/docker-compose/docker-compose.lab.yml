@@ -120,6 +120,31 @@ services:
       retries: 5
       start_period: 20s
 
+  # Nghe OpenCTI Live Stream và ghi kết quả xuống L1.
+  #
+  # Khởi động được cả khi CHƯA bật OpenCTI: thiếu url hoặc token thì service đứng yên
+  # và vẫn trả /healthz. OpenCTI là thành phần tùy chọn, nên thoát vì thiếu cấu hình sẽ
+  # khiến container quay vòng khởi động lại mãi và làm nhiễu mọi dashboard, trong khi
+  # phần còn lại của hệ vẫn chạy hoàn toàn bình thường.
+  sync-consumer:
+    <<: *app
+    command: ["/usr/local/bin/sync-consumer", "-config", "/etc/cyberdns-tip/configs/sync-consumer.yaml"]
+    environment:
+      <<: *app-env
+      TIP_OPS_ADDR: "0.0.0.0:9105"
+      # Rỗng khi chưa bật OpenCTI. Lớp phủ docker-compose.opencti.yml điền các giá trị
+      # thật khi cụm OpenCTI được khởi động.
+      TIP_OPENCTI_URL: ${TIP_OPENCTI_URL:-}
+      TIP_OPENCTI_TOKEN: ${OPENCTI_ADMIN_TOKEN:-}
+      TIP_OPENCTI_STREAM_ID: ${TIP_OPENCTI_STREAM_ID:-}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://127.0.0.1:9105/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+
   # Sinh chứng thư tự ký một lần rồi giữ lại trong volume.
   #
   # Chạy như một service có healthcheck thay vì init container, vì compose không có

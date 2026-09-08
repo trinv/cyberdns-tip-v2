@@ -1,0 +1,64 @@
+service: sync-consumer
+env: ${TIP_ENV:-dev}
+log_level: ${TIP_LOG_LEVEL:-info}
+
+database:
+  # Bí mật không bao giờ nằm trong file cấu hình (CLAUDE.md).
+  dsn: ${TIP_DATABASE_DSN}
+  # Ít hơn các service khác: đây là một luồng sự kiện tuần tự, không phải xử lý hàng loạt.
+  max_conns: 4
+  connect_timeout: 10s
+
+ops:
+  # Cổng nội bộ. /healthz, /readyz, /metrics không bao giờ phơi ra tip.cyberdns.vn.
+  addr: ${TIP_OPS_ADDR:-127.0.0.1:9105}
+
+snapshot:
+  # Service này không dựng snapshot; giá trị chỉ để cấu hình chung hợp lệ.
+  root: ${TIP_SNAPSHOT_ROOT:-./data/snapshots}
+  keep: 5
+
+opencti:
+  # Địa chỉ nội bộ của OpenCTI. Để trống thì service đứng yên thay vì chết trong vòng
+  # lặp khởi động lại — OpenCTI là thành phần tùy chọn.
+  url: ${TIP_OPENCTI_URL:-}
+
+  # Token KHÔNG bao giờ nằm trong file: nó mở toàn bộ kho tri thức tình báo.
+  token: ${TIP_OPENCTI_TOKEN:-}
+
+  # Live stream cần nghe. Tạo trong OpenCTI ở Data > Data sharing > Live streams, rồi
+  # dán id vào đây. Để trống là nghe stream mặc định của instance.
+  stream_id: ${TIP_OPENCTI_STREAM_ID:-}
+
+  # Hàng trong bảng sources đại diện cho OpenCTI. Phải có origin='opencti': đó là thứ
+  # ngăn dữ liệu quay về từ OpenCTI tự thưởng cho mình một xác nhận độc lập.
+  source_name: opencti
+
+  # OpenCTI quyết định nhóm CTI; phần này chỉ dịch nhãn của nó sang tên file blocklist.
+  # Nhãn không có ở đây thì indicator dùng category mặc định của nguồn.
+  label_categories:
+    malware: [malware]
+    ransomware: [malware]
+    trojan: [malware]
+    botnet: [c2]
+    c2: [c2]
+    phishing: [phishing]
+    scam: [scam]
+
+  # Ghi checkpoint theo lô. Ghi mỗi sự kiện một transaction chỉ để lưu một chuỗi id là
+  # phần lớn tải ghi ở nhịp nhập hàng loạt, mà xử lý lại vài sự kiện thì vô hại vì
+  # đường ghi đã idempotent.
+  checkpoint_every: 100
+  checkpoint_after: 10s
+
+  min_backoff: 1s
+  max_backoff: 2m
+
+  # Ngừng lâu hơn mức này thì id sự kiện đã rơi khỏi cửa sổ lưu của stream, và phải
+  # phát lại theo mốc thời gian thay vì im lặng bắt đầu từ hiện tại.
+  max_catch_up: 24h
+
+schedule:
+  # Service này chạy liên tục theo stream, không theo chu kỳ. Giá trị chỉ để hợp lệ.
+  interval: 1h
+  run_at_start: false

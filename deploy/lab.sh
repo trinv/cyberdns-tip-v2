@@ -240,6 +240,23 @@ cmd_status() {
         info "chưa đọc được (PostgreSQL đang khởi động, hoặc migration chưa chạy)"
     fi
 
+    step "Đồng bộ OpenCTI"
+    # Bảng rỗng nghĩa là chưa nhận sự kiện nào — hoặc OpenCTI chưa bật, hoặc
+    # sync-consumer đang đứng yên. Cả hai đều bình thường khi chưa chạy 'lab.sh opencti'.
+    local octi_sql="SELECT s.name AS nguon, s.enabled AS bat,
+        COALESCE(st.last_event_id, '-')                       AS su_kien_cuoi,
+        COALESCE(st.events_seen, 0)                           AS da_nhan,
+        (SELECT count(*) FROM domain_sources ds
+          WHERE ds.source_id = s.id AND ds.active)            AS domain,
+        (SELECT count(*) FROM domain_sources ds
+          WHERE ds.source_id = s.id AND ds.revoked_at IS NOT NULL) AS da_thu_hoi
+       FROM sources s
+       LEFT JOIN opencti_stream_state st ON st.source_id = s.id
+      WHERE s.origin = 'opencti'"
+    if ! compose exec -T postgres psql -U tip -d tip -c "$octi_sql" 2>/dev/null; then
+        info "chưa đọc được (CSDL đang khởi động, hoặc migration chưa chạy)"
+    fi
+
     step "Snapshot"
     local bport
     bport=$(port_of LAB_BLOCKLIST_PORT 8443)
@@ -415,7 +432,58 @@ cmd_opencti() {
     done
     ok "OpenCTI sẵn sàng sau ${waited}s"
 
+    connect_pipeline
+
     cmd_urls
+}
+
+# connect_pipeline bật nguồn 'opencti' rồi dựng lại sync-consumer.
+#
+# Nguồn 'opencti' được seed ở trạng thái TẮT vì trước P4 chưa có gì đọc nó. Bật ở đây
+# chứ không phải trong migration: bật sẵn một nguồn mà không có consumer nào chạy sẽ
+# làm dashboard báo nguồn "quá hạn" mãi mãi.
+#
+# Cả hai thao tác đều idempotent — chạy lại bao nhiêu lần cũng được.
+connect_pipeline() {
+    step "Nối OpenCTI vào đường sinh blocklist"
+
+    if compose exec -T postgres psql -U tip -d tip -q         -c "UPDATE sources SET enabled = TRUE, updated_at = NOW()
+             WHERE name = 'opencti' AND origin = 'opencti'" >/dev/null 2>&1; then
+        ok "đã bật nguồn 'opencti'"
+    else
+        warn "chưa bật được nguồn 'opencti' — bật tay trên dashboard, mục Nguồn dữ liệu"
+    fi
+
+    # sync-consumer đọc URL và token lúc khởi động, nên container đang chạy vẫn giữ
+    # cấu hình rỗng từ trước khi có OpenCTI. Phải dựng lại.
+    if ! compose_all up -d --force-recreate sync-consumer >/dev/null 2>&1; then
+        warn "chưa dựng lại được sync-consumer; xem ./deploy/lab.sh logs sync-consumer"
+        return
+    fi
+
+    # Xác minh thật thay vì tin rằng container lên là xong.
+    #
+    # "docker compose up" thành công chỉ nghĩa là container khởi động được. Nó vẫn khởi
+    # động bình thường khi thiếu token hoặc nguồn còn tắt — và đứng yên. Đó là hành vi
+    # cố ý, nhưng im lặng, nên phải đọc nhật ký mới biết thật sự đã nối chưa.
+    local waited=0 logs
+    while [[ $waited -lt 30 ]]; do
+        logs=$(compose_all logs --tail 40 sync-consumer 2>/dev/null || true)
+        if grep -q 'bắt đầu nghe OpenCTI Live Stream' <<<"$logs"; then
+            ok "sync-consumer đã nối vào Live Stream"
+            return
+        fi
+        if grep -q 'đứng yên' <<<"$logs"; then
+            warn "sync-consumer đang đứng yên — lý do nằm trong nhật ký:"
+            warn "  ./deploy/lab.sh logs sync-consumer"
+            return
+        fi
+        sleep 3
+        waited=$((waited + 3))
+    done
+
+    warn "chưa xác nhận được sync-consumer sau ${waited}s"
+    warn "  ./deploy/lab.sh logs sync-consumer"
 }
 
 cmd_down() {

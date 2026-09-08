@@ -232,6 +232,57 @@ start_stack() {
     ok "OpenCTI đã sẵn sàng sau ${waited}s"
 }
 
+# --------------------------------------------------- nối đường dữ liệu vào pipeline
+
+# connect_pipeline bật nguồn 'opencti' rồi dựng lại sync-consumer.
+#
+# Không có bước này thì OpenCTI chạy nhưng đứng một mình: nguồn 'opencti' được seed ở
+# trạng thái TẮT (vì trước P4 chưa có gì đọc nó), và sync-consumer đọc URL cùng token
+# lúc khởi động nên container đang chạy vẫn giữ cấu hình rỗng từ trước.
+#
+# Cả hai thao tác đều idempotent — chạy lại script bao nhiêu lần cũng được.
+connect_pipeline() {
+    step "Nối OpenCTI vào đường sinh blocklist"
+
+    if compose exec -T postgres psql -U tip -d tip -q         -c "UPDATE sources SET enabled = TRUE, updated_at = NOW()
+             WHERE name = 'opencti' AND origin = 'opencti'" >/dev/null 2>&1; then
+        ok "đã bật nguồn 'opencti'"
+    else
+        warn "chưa bật được nguồn 'opencti'"
+        warn "bật tay trên dashboard quản trị, mục Nguồn dữ liệu"
+    fi
+
+    if ! compose up -d --force-recreate sync-consumer >/dev/null 2>&1; then
+        warn "chưa dựng lại được sync-consumer"
+        return
+    fi
+
+    # Xác minh thật thay vì tin rằng container lên là xong.
+    #
+    # "docker compose up" thành công chỉ nghĩa là container khởi động được. Nó vẫn
+    # khởi động bình thường khi thiếu token hoặc nguồn còn tắt — và đứng yên. Đó là
+    # hành vi cố ý, nhưng im lặng, nên phải đọc nhật ký mới biết thật sự đã nối chưa.
+    local waited=0
+    while [[ $waited -lt 30 ]]; do
+        local logs
+        logs=$(compose logs --tail 40 sync-consumer 2>/dev/null || true)
+        if grep -q 'bắt đầu nghe OpenCTI Live Stream' <<<"$logs"; then
+            ok "sync-consumer đã nối vào Live Stream"
+            return
+        fi
+        if grep -q 'đứng yên' <<<"$logs"; then
+            warn "sync-consumer đang đứng yên — xem lý do trong nhật ký:"
+            warn "  docker compose -f $MAIN_COMPOSE -f $OCTI_COMPOSE logs sync-consumer"
+            return
+        fi
+        sleep 3
+        waited=$((waited + 3))
+    done
+
+    warn "chưa xác nhận được sync-consumer sau ${waited}s"
+    warn "  docker compose -f $MAIN_COMPOSE -f $OCTI_COMPOSE logs sync-consumer"
+}
+
 summary() {
     local email pass
     OPENCTI_HOST_PORT=${OPENCTI_HOST_PORT:-8081}
@@ -259,8 +310,17 @@ $BOLD OpenCTI đã chạy.$RESET
 
   SAO LƯU $ENV_FILE ngay. Mất OPENCTI_ENCRYPTION_KEY là mất khả năng giải mã dữ liệu.
 
-  Lưu ý: OpenCTI hiện CHƯA nối vào đường sinh blocklist. Connector đẩy dữ liệu vào và
-  sync-consumer kéo ngược về PostgreSQL thuộc P4 và chưa được viết. Xem README.md.
+  Đường dữ liệu OpenCTI -> blocklist đã nối: sync-consumer nghe Live Stream và ghi
+  xuống PostgreSQL. Thu hồi (Revoke) một indicator trong OpenCTI sẽ gỡ chặn domain
+  tương ứng ở lượt policy kế tiếp, kể cả khi nhiều feed vẫn liệt kê nó.
+
+  Nhật ký đường này   docker compose -f $MAIN_COMPOSE -f $OCTI_COMPOSE logs -f sync-consumer
+
+  Chiều ngược lại (đẩy dữ liệu từ feed vào OpenCTI) chưa có. Xem README.md.
+
+  Token quản trị ở trên đang được dùng để đọc Live Stream. Trước khi mở dịch vụ ra
+  ngoài VNNIC, hãy tạo một service account riêng chỉ có quyền đọc stream — token quản
+  trị mở toàn bộ kho tri thức tình báo, kể cả phần chưa công bố.
 
 EOF
 }
@@ -272,6 +332,7 @@ main() {
     set_max_map_count
     setup_env
     start_stack
+    connect_pipeline
     summary
 }
 

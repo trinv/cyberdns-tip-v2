@@ -441,6 +441,29 @@ func (s *Store) BlockedRules(ctx context.Context, category string) ([]domainname
 }
 
 // Categories trả về tên mọi category, đã sắp xếp.
+// CategoryIDsByName trả về ánh xạ tên category sang id.
+//
+// sync-consumer cần nó để dịch nhãn OpenCTI sang category: cấu hình viết bằng tên cho
+// người đọc, còn CSDL khóa theo id.
+func (s *Store) CategoryIDsByName(ctx context.Context) (map[string]int16, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, name FROM categories`)
+	if err != nil {
+		return nil, fmt.Errorf("store: đọc category: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]int16)
+	for rows.Next() {
+		var id int16
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("store: quét category: %w", err)
+		}
+		out[name] = id
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) Categories(ctx context.Context) ([]string, error) {
 	rows, err := s.pool.Query(ctx, "SELECT name FROM categories ORDER BY name")
 	if err != nil {
