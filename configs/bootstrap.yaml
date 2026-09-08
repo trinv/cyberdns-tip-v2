@@ -1,0 +1,29 @@
+service: bootstrap
+env: ${TIP_ENV:-dev}
+log_level: ${TIP_LOG_LEVEL:-info}
+
+database:
+  dsn: ${TIP_DATABASE_DSN}
+  # Chạy một lần rồi thoát; không cần pool lớn.
+  max_conns: 2
+  connect_timeout: 30s
+
+ops:
+  # Không mở cổng nào: tiến trình này thoát ngay sau khi xong. Giá trị chỉ để cấu hình
+  # chung hợp lệ.
+  addr: 127.0.0.1:9199
+
+snapshot:
+  root: ${TIP_SNAPSHOT_ROOT:-./data/snapshots}
+  keep: 5
+
+opencti:
+  # Chỉ dùng để quyết định có bật nguồn 'opencti' hay không. Rỗng thì giữ nguyên trạng
+  # thái hiện tại của nguồn.
+  url: ${TIP_OPENCTI_URL:-}
+  token: ${TIP_OPENCTI_TOKEN:-}
+  source_name: opencti
+
+schedule:
+  interval: 1h
+  run_at_start: false

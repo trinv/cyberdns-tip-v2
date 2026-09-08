@@ -154,7 +154,8 @@ setup_env() {
         return
     fi
 
-    local admin_pass minio_pass rabbit_pass
+    local admin_pass minio_pass rabbit_pass token
+    token=$(uuidgen)
     admin_pass=$(openssl rand -base64 24 | tr -d '\n/+=' | head -c 24)
     minio_pass=$(openssl rand -base64 32 | tr -d '\n/+=' | head -c 32)
     rabbit_pass=$(openssl rand -base64 32 | tr -d '\n/+=' | head -c 32)
@@ -169,11 +170,22 @@ OPENCTI_VERSION=7.260907.0
 
 OPENCTI_ADMIN_EMAIL=admin@vnnic.vn
 OPENCTI_ADMIN_PASSWORD=$admin_pass
-OPENCTI_ADMIN_TOKEN=$(uuidgen)
+OPENCTI_ADMIN_TOKEN=$token
 OPENCTI_ENCRYPTION_KEY=$(openssl rand -base64 32)
 OPENCTI_HEALTHCHECK_ACCESS_KEY=$(openssl rand -hex 16)
 OPENCTI_HOST_PORT=8081
 OPENCTI_BASE_URL=http://localhost:8081
+
+# Hai biến này là thứ nối OpenCTI vào đường sinh blocklist: bootstrap dùng chúng để
+# quyết định có bật nguồn 'opencti' hay không, còn sync-consumer dùng để đọc Live
+# Stream. Thiếu chúng thì cụm OpenCTI chạy nhưng đứng một mình.
+#
+# Token dùng chung với tài khoản quản trị vì đây là cài đặt nội bộ. Trước khi mở dịch
+# vụ ra ngoài VNNIC phải tạo service account riêng chỉ có quyền đọc stream: token quản
+# trị mở toàn bộ kho tri thức tình báo, kể cả phần chưa công bố.
+TIP_OPENCTI_URL=http://opencti:8080
+TIP_OPENCTI_TOKEN=$token
+TIP_OPENCTI_STREAM_ID=
 
 MINIO_ROOT_USER=opencti
 MINIO_ROOT_PASSWORD=$minio_pass
@@ -234,49 +246,39 @@ start_stack() {
 
 # --------------------------------------------------- nối đường dữ liệu vào pipeline
 
-# connect_pipeline bật nguồn 'opencti' rồi dựng lại sync-consumer.
+# connect_pipeline dựng lại stack chính rồi xác minh đường đồng bộ.
 #
-# Không có bước này thì OpenCTI chạy nhưng đứng một mình: nguồn 'opencti' được seed ở
-# trạng thái TẮT (vì trước P4 chưa có gì đọc nó), và sync-consumer đọc URL cùng token
-# lúc khởi động nên container đang chạy vẫn giữ cấu hình rỗng từ trước.
-#
-# Cả hai thao tác đều idempotent — chạy lại script bao nhiêu lần cũng được.
+# Phải dựng lại: sync-consumer đọc URL và token lúc khởi động, nên container đang chạy
+# vẫn giữ cấu hình rỗng từ trước khi có OpenCTI. Lệnh up cũng khiến service bootstrap
+# chạy lại và bật nguồn 'opencti' — không cần thao tác SQL nào ở đây.
 connect_pipeline() {
     step "Nối OpenCTI vào đường sinh blocklist"
 
-    if compose exec -T postgres psql -U tip -d tip -q         -c "UPDATE sources SET enabled = TRUE, updated_at = NOW()
-             WHERE name = 'opencti' AND origin = 'opencti'" >/dev/null 2>&1; then
-        ok "đã bật nguồn 'opencti'"
-    else
-        warn "chưa bật được nguồn 'opencti'"
-        warn "bật tay trên dashboard quản trị, mục Nguồn dữ liệu"
-    fi
-
-    if ! compose up -d --force-recreate sync-consumer >/dev/null 2>&1; then
+    if ! compose up -d --force-recreate bootstrap sync-consumer >/dev/null 2>&1; then
         warn "chưa dựng lại được sync-consumer"
+        warn "  docker compose -f $MAIN_COMPOSE -f $OCTI_COMPOSE logs sync-consumer"
         return
     fi
 
     # Xác minh thật thay vì tin rằng container lên là xong.
     #
-    # "docker compose up" thành công chỉ nghĩa là container khởi động được. Nó vẫn
-    # khởi động bình thường khi thiếu token hoặc nguồn còn tắt — và đứng yên. Đó là
-    # hành vi cố ý, nhưng im lặng, nên phải đọc nhật ký mới biết thật sự đã nối chưa.
-    local waited=0
-    while [[ $waited -lt 30 ]]; do
-        local logs
-        logs=$(compose logs --tail 40 sync-consumer 2>/dev/null || true)
+    # "docker compose up" thành công chỉ nghĩa là container khởi động được. sync-consumer
+    # vẫn khởi động bình thường khi thiếu token hoặc nguồn còn tắt — và chờ, một cách im
+    # lặng. Đó là hành vi cố ý, nên phải đọc nhật ký mới biết thật sự đã nối chưa.
+    local waited=0 logs
+    while [[ $waited -lt 60 ]]; do
+        logs=$(compose logs --tail 50 sync-consumer 2>/dev/null || true)
         if grep -q 'bắt đầu nghe OpenCTI Live Stream' <<<"$logs"; then
             ok "sync-consumer đã nối vào Live Stream"
             return
         fi
-        if grep -q 'đứng yên' <<<"$logs"; then
-            warn "sync-consumer đang đứng yên — xem lý do trong nhật ký:"
+        if grep -qE 'đứng yên|chưa bật nguồn' <<<"$logs"; then
+            warn "sync-consumer chưa nối được — lý do nằm trong nhật ký:"
             warn "  docker compose -f $MAIN_COMPOSE -f $OCTI_COMPOSE logs sync-consumer"
             return
         fi
-        sleep 3
-        waited=$((waited + 3))
+        sleep 5
+        waited=$((waited + 5))
     done
 
     warn "chưa xác nhận được sync-consumer sau ${waited}s"

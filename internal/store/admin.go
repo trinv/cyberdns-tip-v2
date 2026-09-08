@@ -205,3 +205,17 @@ func (s *Store) Audit(ctx context.Context, actor, action, entity, entityID strin
 	}
 	return nil
 }
+
+// AdminExists báo đã có tài khoản quản trị với email này chưa.
+//
+// Cần cho đường khởi tạo tự động: CreateAdmin là upsert, nên gọi nó ở mỗi lần khởi
+// động sẽ đặt lại mật khẩu mà người vận hành vừa đổi trên dashboard — im lặng, và chỉ
+// lộ ra ở lần đăng nhập tiếp theo.
+func (s *Store) AdminExists(ctx context.Context, email string) (bool, error) {
+	var exists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM admin_users WHERE email = $1)`, email).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: kiểm tra tài khoản quản trị: %w", err)
+	}
+	return exists, nil
+}

@@ -40,7 +40,7 @@ Nguyên lý nền: dữ liệu chia 4 tầng, **chỉ tầng bằng chứng là 
 ## Cấu trúc
 
 ```
-cmd/            5 service Go
+cmd/            6 lệnh Go (5 service + bootstrap chạy một lần)
 internal/       code dùng chung (config, db, metrics, httpx, app)
 migrations/     lược đồ SQL, nhúng vào binary
 connectors/     connector đẩy dữ liệu ngược vào OpenCTI (chưa viết)
@@ -56,27 +56,54 @@ Go 1.26+, PostgreSQL 17+. Docker chỉ cần cho stack phát triển cục bộ.
 
 ## Chạy
 
+### Docker (cách thường dùng)
+
+Stack tự chứa hoàn toàn — không cần tên miền, DNS hay chứng thư thật. `compose.yaml`
+nằm ở gốc repo nên `docker compose` chạy trần, không cần `-f` hay `--env-file`:
+
+```sh
+docker compose up -d
+```
+
+Vòng đời sau mỗi lần đẩy code mới:
+
+```sh
+docker compose down -v
+git pull
+docker compose build
+docker compose up -d
+```
+
+Không có bước thủ công nào ở giữa. Service `bootstrap` chạy migration, tạo tài khoản
+quản trị và bật nguồn OpenCTI (nếu đã cấu hình), rồi thoát; mọi service khác chờ nó
+chạy **xong** mới khởi động. Đó là lý do `down -v` — vốn xóa sạch cả volume dữ liệu —
+vẫn cho ra một stack dùng được ngay.
+
+Mật khẩu quản trị: đặt `TIP_ADMIN_PASSWORD` trong `.env` để nó ổn định qua mỗi lần dựng
+lại. Bỏ trống thì bootstrap sinh ngẫu nhiên và in ra nhật ký của chính nó
+(`docker compose logs bootstrap`). Không có mật khẩu mặc định.
+
+Muốn có sẵn `.env` với bí mật ngẫu nhiên thì chạy `./deploy/lab.sh up` một lần; sau đó
+dùng lệnh `docker compose` trần cũng được. Xem [.env.example](.env.example) và
+[deploy/LAB.md](deploy/LAB.md).
+
+### Không dùng Docker
+
 Bí mật đi qua biến môi trường, không bao giờ nằm trong file cấu hình.
 
 ```sh
 export TIP_DATABASE_DSN='postgres://tip:tip@localhost:5432/tip?sslmode=disable'
 
-# Chạy migration (mọi service đều nhúng cùng bộ migration)
-go run ./cmd/feed-ingestor -config configs/feed-ingestor.yaml -migrate
+# Migration + tài khoản quản trị đầu tiên
+go run ./cmd/bootstrap -config configs/bootstrap.yaml
 
 # Chạy một service
 go run ./cmd/feed-ingestor -config configs/feed-ingestor.yaml
 ```
 
 Cổng vận hành nội bộ của mỗi service: `/healthz`, `/readyz`, `/metrics`
-(9101 feed-ingestor, 9102 policy-engine, 9103 blocklist-generator, 9104 admin-api).
-Ba endpoint này **không bao giờ được phơi ra `tip.cyberdns.vn`**.
-
-Stack cục bộ đầy đủ:
-
-```sh
-docker compose -f deploy/docker-compose/docker-compose.yml up -d
-```
+(9101 feed-ingestor, 9102 policy-engine, 9103 blocklist-generator, 9104 admin-api,
+9105 sync-consumer). Các endpoint này **không bao giờ được phơi ra `tip.cyberdns.vn`**.
 
 ## Kiểm thử
 
@@ -88,19 +115,6 @@ go test ./...                      # unit, không cần PostgreSQL
 TIP_TEST_DATABASE_DSN='postgres://tip:tip@localhost:5432/tip_test?sslmode=disable' \
   go test -count=1 ./internal/db/...
 ```
-
-## Chạy thử trên lab Docker
-
-Stack tự chứa hoàn toàn — không cần tên miền, DNS hay chứng thư thật:
-
-```sh
-./deploy/lab.sh up
-```
-
-Một lệnh: build image, dựng CSDL, chạy migration, tạo tài khoản quản trị, khởi động
-mọi dịch vụ kèm nginx và chứng thư tự ký, rồi in ra URL và mật khẩu.
-
-Hướng dẫn đầy đủ: [deploy/LAB.md](deploy/LAB.md).
 
 ## Triển khai production
 
@@ -125,7 +139,8 @@ sudo ./deploy/install.sh --email admin@vnnic.vn
 ```
 
 Script làm trọn: cài nginx/certbot, kiểm tra DNS, xin chứng thư, cài cấu hình nginx,
-chuyển gia hạn sang webroot, sinh `.env`, chạy migration, khởi động stack, rồi xác minh.
+chuyển gia hạn sang webroot, sinh `.env`, khởi động stack (bootstrap tự chạy migration),
+rồi xác minh.
 
 Chạy lại được nhiều lần — mỗi bước tự kiểm tra trạng thái trước khi làm. Hai thứ script
 **không bao giờ** đụng vào: `.env` đã tồn tại (ghi đè là đổi `POSTGRES_PASSWORD`, và

@@ -73,6 +73,7 @@ jobs:
     strategy:
       matrix:
         service:
+          - bootstrap
           - feed-ingestor
           - policy-engine
           - blocklist-generator
@@ -116,7 +117,11 @@ jobs:
       # duy nhất các file compose được chính docker compose đọc.
       - name: Kiểm tra cú pháp docker compose
         run: |
-          for f in lab prod opencti; do
+          # compose.yaml ở gốc repo là thứ người dùng chạy bằng "docker compose" trần,
+          # nên nó phải hợp lệ mà KHÔNG cần file .env nào.
+          docker compose -f compose.yaml config -q             || { echo "::error::compose.yaml khong hop le khi khong co .env"; exit 1; }
+
+          for f in prod opencti; do
             docker compose -f "deploy/docker-compose/docker-compose.$f.yml" config -q               --env-file /dev/null 2>/dev/null               || docker compose -f "deploy/docker-compose/docker-compose.$f.yml" config -q               || echo "::warning::docker-compose.$f.yml can bien moi truong de kiem tra day du"
           done
 

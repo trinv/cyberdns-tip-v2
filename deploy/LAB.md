@@ -29,18 +29,55 @@ cd cyberdns-tip-v2
 ./deploy/lab.sh up
 ```
 
-Chỉ vậy. Script sẽ:
+`lab.sh up` sinh file `.env` với mật khẩu ngẫu nhiên, build image rồi khởi động. Sau
+lần đó thì **không cần script nữa** — `compose.yaml` nằm ở gốc repo và `.env` đã có, nên
+`docker compose` chạy trần.
 
-1. Sinh `deploy/docker-compose/.env.lab` với mật khẩu ngẫu nhiên
-2. Build một image chứa cả bốn service
-3. Khởi động PostgreSQL và chờ nó sẵn sàng
-4. Chạy migration
-5. Tạo tài khoản quản trị, in mật khẩu ra màn hình
-6. Khởi động toàn bộ dịch vụ kèm nginx và chứng thư tự ký
-7. In ra URL và thông tin đăng nhập
+## Vòng đời sau mỗi lần đẩy code
 
-Lần đầu mất vài phút để build. Chạy lại `up` bất cứ lúc nào — mỗi bước tự kiểm tra
-trạng thái trước khi làm, và **không bao giờ ghi đè** mật khẩu đã sinh.
+Bốn lệnh, chạy ở gốc repo, không có bước thủ công nào ở giữa:
+
+```sh
+docker compose down -v
+git pull
+docker compose build
+docker compose up -d
+```
+
+`docker compose up -d` không trả về cho tới khi service **`bootstrap`** chạy xong. Nó
+làm ba việc, cả ba đều idempotent:
+
+1. Chạy migration.
+2. Tạo tài khoản quản trị đầu tiên **nếu chưa có** — không đụng tới tài khoản đã tồn
+   tại, nên mật khẩu bạn đổi trên dashboard không bị ghi đè.
+3. Bật nguồn `opencti` nếu OpenCTI đã được cấu hình.
+
+Mọi service khác khai báo `depends_on: bootstrap: service_completed_successfully`, nên
+chúng chỉ khởi động sau khi lược đồ đã đúng phiên bản. Đó là lý do `down -v` — vốn xóa
+sạch cả volume dữ liệu — vẫn cho ra một stack dùng được ngay.
+
+`--no-cache` chỉ cần khi bạn nghi cache hỏng. Bình thường `docker compose build` là đủ:
+lớp `COPY . .` tự mất hiệu lực khi mã nguồn đổi, và bỏ `--no-cache` giúp tiết kiệm phần
+lớn thời gian build.
+
+### Mật khẩu quản trị
+
+`lab.sh up` ghi sẵn `TIP_ADMIN_PASSWORD` vào `.env`, nên mật khẩu **ổn định qua mỗi lần
+`down -v`**. Xem lại bất cứ lúc nào:
+
+```sh
+./deploy/lab.sh urls
+```
+
+Nếu bạn tự tạo `.env` và để trống `TIP_ADMIN_PASSWORD`, bootstrap sinh ngẫu nhiên và in
+ra nhật ký của chính nó:
+
+```sh
+docker compose logs bootstrap
+```
+
+Không có mật khẩu mặc định: một tài khoản admin/admin trên hệ điều khiển việc chặn tên
+miền quốc gia là chuyện không được phép tồn tại dù chỉ một phút.
 
 ## Truy cập
 
@@ -51,7 +88,7 @@ trạng thái trước khi làm, và **không bao giờ ghi đè** mật khẩu 
 | Manifest | `https://localhost:8443/blocklist/manifest.json` |
 | OpenCTI | `https://localhost:10443` (sau khi bật, xem bên dưới) |
 
-Quên mật khẩu thì chạy `./deploy/lab.sh urls`.
+Quên mật khẩu thì chạy `./deploy/lab.sh urls`, hoặc đọc `TIP_ADMIN_PASSWORD` trong `.env`.
 
 Chứng thư là bản **tự ký**, nên trình duyệt sẽ cảnh báo — bấm qua. Với `curl` thêm `-k`:
 
@@ -76,27 +113,37 @@ Trong suốt thời gian đó, các URL blocklist trả **HTTP 503**. Đó là h
 đường dẫn đã thông nhưng chưa có snapshot nào được phát hành. Nếu trả 200 ngay lập tức
 mới là chuyện lạ.
 
+Muốn thử nhanh hơn thì tắt HaGeZi TIF trên dashboard và thêm một nguồn nhỏ của riêng
+bạn — mọi thứ chạy giống hệt, chỉ khác khối lượng.
+
 Theo dõi tiến trình:
 
 ```sh
 ./deploy/lab.sh status
-./deploy/lab.sh logs feed-ingestor
+docker compose logs -f feed-ingestor
 ```
-
-Muốn thử nhanh hơn thì tắt HaGeZi TIF trên dashboard và thêm một nguồn nhỏ của riêng
-bạn — mọi thứ chạy giống hệt, chỉ khác khối lượng.
 
 ## Các lệnh
 
+Toàn bộ đều là `docker compose` trần, chạy ở gốc repo:
+
 ```sh
-./deploy/lab.sh up        # dựng và khởi động (chạy lại được nhiều lần)
-./deploy/lab.sh status    # trạng thái container, số domain, tình trạng snapshot
+docker compose ps                     # trạng thái container
+docker compose logs -f                # toàn bộ log
+docker compose logs -f feed-ingestor  # một service
+docker compose restart feed-ingestor  # chạy thu thập ngay (nó chạy một lượt khi lên)
+docker compose down                   # dừng, GIỮ dữ liệu
+docker compose down -v                # dừng và XÓA SẠCH volume
+```
+
+`lab.sh` chỉ là tiện ích quanh những lệnh đó, cộng phần sinh bí mật:
+
+```sh
+./deploy/lab.sh up        # sinh .env nếu chưa có, build và khởi động
+./deploy/lab.sh status    # container + số domain + đồng bộ OpenCTI + snapshot
 ./deploy/lab.sh urls      # in lại URL và mật khẩu
-./deploy/lab.sh logs                    # toàn bộ
-./deploy/lab.sh logs feed-ingestor      # một service
-./deploy/lab.sh ingest    # chạy thu thập ngay, không chờ hết chu kỳ
-./deploy/lab.sh down      # dừng, GIỮ dữ liệu
-./deploy/lab.sh reset     # dừng và XÓA SẠCH (hỏi xác nhận)
+./deploy/lab.sh opencti   # bổ sung bí mật OpenCTI vào .env rồi khởi động cụm đó
+./deploy/lab.sh reset     # docker compose down -v, có hỏi xác nhận
 ```
 
 ## Nối vào Blocky
@@ -125,8 +172,13 @@ hoặc trỏ thẳng vào cổng HTTP nội bộ của container thay vì qua ng
 ./deploy/lab.sh opencti
 ```
 
-Script tự lo mọi thứ: kiểm tra RAM, kiểm tra `vm.max_map_count`, sinh `.env.opencti` với
-bí mật ngẫu nhiên, tải image, khởi động, chờ sẵn sàng, rồi in ra tài khoản đăng nhập.
+Script tự lo mọi thứ: kiểm tra RAM, kiểm tra `vm.max_map_count`, **bổ sung bí mật
+OpenCTI vào cùng file `.env`**, tải image, khởi động, chờ sẵn sàng, xác minh đường đồng
+bộ, rồi in ra tài khoản đăng nhập.
+
+Trong đó có dòng `COMPOSE_FILE=compose.yaml:deploy/docker-compose/docker-compose.opencti.yml`.
+Nhờ nó, từ lúc đó `docker compose` trần bao gồm luôn cụm OpenCTI — bốn lệnh ở mục *Vòng
+đời sau mỗi lần đẩy code* vẫn dùng nguyên như cũ, không cần thêm `-f` nào.
 
 **Đăng nhập:** `https://localhost:10443`, tài khoản `admin@vnnic.vn`. Mật khẩu in ra khi
 chạy xong, hoặc lấy lại bất cứ lúc nào bằng `./deploy/lab.sh urls`.
@@ -155,8 +207,8 @@ Elasticsearch và nạp dữ liệu nền — vài phút là bình thường, sc
 
 ### Đường dữ liệu OpenCTI -> blocklist
 
-Sau khi `./deploy/lab.sh opencti` chạy xong, script tự bật nguồn `opencti` trong CSDL và
-dựng lại `sync-consumer` để nó nhận URL và token vừa sinh. Từ lúc đó:
+Sau khi `./deploy/lab.sh opencti` chạy xong, service `bootstrap` đã bật nguồn `opencti`
+và `sync-consumer` đã nhận URL cùng token. Từ lúc đó:
 
 | Thành phần | Vai trò | Trạng thái |
 |---|---|---|
@@ -166,18 +218,18 @@ dựng lại `sync-consumer` để nó nhận URL và token vừa sinh. Từ lú
 Kiểm tra nó đang chạy:
 
 ```sh
-./deploy/lab.sh logs sync-consumer
+docker compose logs -f sync-consumer
 ```
 
 Dòng cần thấy là `bắt đầu nghe OpenCTI Live Stream`. Nếu thay vào đó là `OpenCTI chưa cấu
-hình` hoặc `chưa bật nguồn OpenCTI`, service đang **đứng yên có chủ đích** chứ không hỏng
-— xem phần xử lý sự cố bên dưới.
+hình` hoặc `chưa bật nguồn OpenCTI, sẽ thử lại`, service đang **chờ có chủ đích** chứ
+không hỏng — xem phần xử lý sự cố bên dưới.
 
 **Thử một vòng đầu-cuối.** Trong OpenCTI, tạo một Indicator với pattern
 `[domain-name:value = 'test-tip.example.com']`, gắn nhãn `malware`. Trong vòng vài giây
 domain sẽ xuất hiện ở L1; sau lượt policy và lượt dựng snapshot kế tiếp nó có mặt trong
 `malware.txt`. Rút ngắn chờ đợi bằng cách hạ `TIP_POLICY_INTERVAL` và `TIP_BUILD_INTERVAL`
-trong `.env.lab`.
+trong `.env` rồi `docker compose up -d`.
 
 Rồi bấm **Revoke** trên chính indicator đó: ở lượt policy kế tiếp domain **rời khỏi**
 blocklist với `reason_code = opencti_revoked`, kể cả khi các feed khác vẫn liệt kê nó.
@@ -195,11 +247,7 @@ vượt ngưỡng chặn mà không nguồn nào thật sự xác nhận thêm.
 ### Tắt OpenCTI, giữ stack chính
 
 ```sh
-cd deploy/docker-compose
-
-docker compose -f docker-compose.lab.yml -f docker-compose.opencti.yml \
-  --env-file .env.lab --env-file .env.opencti \
-  stop opencti opencti-worker elasticsearch redis minio rabbitmq
+docker compose stop opencti opencti-worker elasticsearch redis minio rabbitmq
 ```
 
 Cổng 10443 sẽ trả **502** khi OpenCTI tắt — đúng như thiết kế, và blocklist với dashboard
@@ -208,33 +256,36 @@ không bị ảnh hưởng.
 ## Xử lý sự cố
 
 **Cổng đã bị chiếm.** Sửa `LAB_BLOCKLIST_PORT`, `LAB_ADMIN_PORT` hoặc
-`LAB_POSTGRES_PORT` trong `deploy/docker-compose/.env.lab` rồi chạy lại `up`.
+`LAB_POSTGRES_PORT` trong `.env` ở gốc repo rồi `docker compose up -d`.
 
 **Blocklist trả 503.** Chưa có snapshot. Xem `./deploy/lab.sh status`; nếu lần thu thập
-đã xong mà vẫn 503 thì xem `./deploy/lab.sh logs blocklist-generator`.
+đã xong mà vẫn 503 thì xem `docker compose logs blocklist-generator`.
 
 **Import bị từ chối.** Đây là hành vi cố ý — hệ fail-closed. Vào dashboard, mục **Lịch
 sử import** sẽ ghi rõ lý do. Các lý do hay gặp: feed rỗng, phản hồi bị cắt cụt, tỉ lệ
 dòng lỗi vượt ngưỡng, hoặc số bản ghi biến động quá lớn so với lần trước. Dữ liệu cũ và
 snapshot đang phát hành **không bị ảnh hưởng**.
 
-**`sync-consumer` báo "đứng yên".** Đây là hành vi có chủ đích, không phải lỗi. Ba
+**`sync-consumer` chưa nối vào Live Stream.** Đây là hành vi có chủ đích, không phải
+lỗi. Ba
 nguyên nhân, nhật ký nói rõ nguyên nhân nào:
 
 - `OpenCTI chưa cấu hình` — chưa chạy `./deploy/lab.sh opencti`.
-- `chưa bật nguồn OpenCTI` — hàng `opencti` trong bảng `sources` đang tắt. Bật trên
-  dashboard ở mục Nguồn dữ liệu, hoặc chạy lại `./deploy/lab.sh opencti`.
+- `chưa bật nguồn OpenCTI, sẽ thử lại` — hàng `opencti` trong bảng `sources` đang tắt.
+  Bật trên dashboard ở mục Nguồn dữ liệu; service tự bắt được trong vòng 30 giây, không
+  cần khởi động lại container.
 - Thoát hẳn với thông báo về `origin` — hàng `sources` tên `opencti` có `origin` khác
   `'opencti'`. Đây là lỗi cấu hình nghiêm trọng: nó sẽ khiến dữ liệu quay về từ OpenCTI
   bị tính thành nguồn độc lập và làm lạm phát điểm.
 
-**Đăng nhập thất bại sau khi `reset`.** `reset` xóa cả tài khoản. Chạy `up` để tạo lại.
+**Đăng nhập thất bại sau khi `down -v`.** Volume bị xóa nên tài khoản cũng mất, nhưng
+`bootstrap` tạo lại ngay ở lần `up` kế tiếp với đúng `TIP_ADMIN_PASSWORD` trong `.env`.
+Nếu biến đó để trống thì mật khẩu là giá trị mới, đọc bằng `docker compose logs bootstrap`.
 
 **Muốn soi CSDL trực tiếp.**
 
 ```sh
-docker compose -f deploy/docker-compose/docker-compose.lab.yml \
-  --env-file deploy/docker-compose/.env.lab exec postgres psql -U tip -d tip
+docker compose exec postgres psql -U tip -d tip
 ```
 
 Hoặc từ host, cổng `55433`.

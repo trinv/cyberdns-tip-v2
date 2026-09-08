@@ -23,6 +23,7 @@ RUN CGO_ENABLED=0 go build \
       -trimpath \
       -ldflags "-s -w -X github.com/vnnic/cyberdns-tip/internal/app.Version=${VERSION}" \
       -o /out/ \
+      ./cmd/bootstrap \
       ./cmd/feed-ingestor \
       ./cmd/policy-engine \
       ./cmd/blocklist-generator \

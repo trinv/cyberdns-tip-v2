@@ -76,6 +76,19 @@ func Bootstrap(ctx context.Context, name string) (*Service, error) {
 	}, nil
 }
 
+// Migrate chạy migration trên pool đang mở.
+//
+// Tách khỏi cờ -migrate của Bootstrap (vốn chạy xong là os.Exit) để cmd/bootstrap còn
+// làm tiếp các bước khởi tạo khác trong cùng một tiến trình.
+func (s *Service) Migrate(ctx context.Context) error {
+	applied, err := db.Migrate(ctx, s.Pool, migrations.FS)
+	if err != nil {
+		return fmt.Errorf("migration: %w", err)
+	}
+	s.Log.Info("migration hoàn tất", "applied", applied, "count", len(applied))
+	return nil
+}
+
 func newLogger(level string) *slog.Logger {
 	var lv slog.Level
 	if err := lv.UnmarshalText([]byte(level)); err != nil {

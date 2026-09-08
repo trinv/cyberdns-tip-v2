@@ -445,3 +445,20 @@ func defaultConfidence(src Source) int16 {
 	}
 	return int16(src.TrustScore)
 }
+
+// SetSourceEnabled bật hoặc tắt một nguồn theo tên.
+//
+// Ràng buộc thêm origin chứ không chỉ tên: bật nhầm một nguồn feed thường thành nguồn
+// OpenCTI sẽ khiến dữ liệu quay về từ OpenCTI được tính là xác nhận độc lập và làm lạm
+// phát điểm — đúng vòng lặp phản hồi mà cột origin sinh ra để chặn.
+func (s *Store) SetSourceEnabled(ctx context.Context, name, origin string, enabled bool) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE sources
+		   SET enabled = $3::boolean, updated_at = NOW()
+		 WHERE name = $1::text AND origin = $2::source_origin AND enabled <> $3::boolean`,
+		name, origin, enabled)
+	if err != nil {
+		return false, fmt.Errorf("store: đổi trạng thái nguồn %s: %w", name, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}

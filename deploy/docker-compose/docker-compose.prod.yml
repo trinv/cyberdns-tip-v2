@@ -1,9 +1,10 @@
 # Triển khai production cho https://tip.cyberdns.vn
 #
 #   cp .env.example .env   # rồi điền bí mật vào
-#   docker compose -f docker-compose.prod.yml up -d postgres
-#   docker compose -f docker-compose.prod.yml run --rm feed-ingestor -migrate
 #   docker compose -f docker-compose.prod.yml up -d
+#
+# Không có bước migrate thủ công: service "bootstrap" chạy migration và tạo tài khoản
+# quản trị đầu tiên, và mọi service khác chờ nó chạy xong mới khởi động.
 #
 # TLS và reverse proxy do nginx TRÊN HOST đảm nhiệm (systemd), không phải container:
 # chứng thư số ở /etc/letsencrypt tách hẳn khỏi vòng đời container, nên build lại stack
@@ -26,8 +27,8 @@ x-service-base: &service-base
     TIP_DATABASE_DSN: postgres://tip:${POSTGRES_PASSWORD:?cần đặt POSTGRES_PASSWORD}@postgres:5432/tip?sslmode=disable
     TIP_SNAPSHOT_ROOT: /var/lib/cyberdns-tip/snapshots
   depends_on:
-    postgres:
-      condition: service_healthy
+    bootstrap:
+      condition: service_completed_successfully
   restart: unless-stopped
   # Container chỉ cần ghi vào volume snapshot; phần còn lại để chỉ đọc.
   read_only: true
@@ -53,6 +54,32 @@ services:
       timeout: 5s
       retries: 10
     # Không publish cổng: chỉ các service trong mạng compose truy cập được.
+
+  # Đưa CSDL về trạng thái chạy được rồi thoát: migration, tài khoản quản trị đầu
+  # tiên, bật nguồn OpenCTI nếu đã cấu hình. Cả ba đều idempotent.
+  #
+  # TIP_ADMIN_PASSWORD trong .env quyết định mật khẩu tài khoản đầu tiên. Bỏ trống thì
+  # bootstrap sinh ngẫu nhiên và in ra nhật ký của chính nó:
+  #   docker compose -f docker-compose.prod.yml logs bootstrap
+  bootstrap:
+    <<: *service-base
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+    command: ["/usr/local/bin/bootstrap", "-config", "/etc/cyberdns-tip/configs/bootstrap.yaml"]
+    environment:
+      <<: *service-env
+      TIP_ADMIN_EMAIL: ${TIP_ADMIN_EMAIL:-admin@vnnic.vn}
+      TIP_ADMIN_PASSWORD: ${TIP_ADMIN_PASSWORD:-}
+      TIP_OPENCTI_URL: ${TIP_OPENCTI_URL:-}
+      TIP_OPENCTI_TOKEN: ${TIP_OPENCTI_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Chạy một lần rồi thoát. "unless-stopped" ở đây sẽ khiến nó chạy lại vô hạn.
+    restart: "no"
 
   feed-ingestor:
     <<: *service-base

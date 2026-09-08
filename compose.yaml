@@ -1,30 +1,39 @@
-# CyberDNS TIP — stack lab, tự chứa hoàn toàn.
+# CyberDNS TIP — stack tự chứa, chạy bằng docker compose trần.
 #
-# Khác bản production ở ba điểm, đều vì lab không có tên miền công khai:
+# Nằm ở GỐC repo để "docker compose" không cần -f và không cần --env-file. Vòng đời
+# thường ngày sau mỗi lần đẩy code:
 #
-#   1. nginx chạy TRONG container, không phải trên host. Ở production nginx nằm ngoài
-#      để chứng thư Let's Encrypt tách khỏi vòng đời container; trong lab không có
-#      chứng thư thật nên lý do đó biến mất, và gói mọi thứ vào compose thì dựng và
-#      xóa sạch chỉ bằng một lệnh.
-#   2. Chứng thư TỰ KÝ, sinh tự động lúc khởi động. Trình duyệt sẽ cảnh báo — đúng như
-#      mong đợi, vì không có CA nào ký.
-#   3. Mỗi giao diện một cổng riêng thay vì phân biệt theo tên miền: lab không có DNS.
+#   docker compose down -v
+#   git pull
+#   docker compose build
+#   docker compose up -d
 #
-# Dùng qua deploy/lab.sh, đừng gọi trực tiếp:
+# Không có bước thủ công nào ở giữa: service "bootstrap" chạy migration, tạo tài khoản
+# quản trị và bật nguồn OpenCTI (nếu đã cấu hình) trước khi các service khác khởi động.
+# Đó là lý do "down -v" — vốn xóa sạch cả volume dữ liệu — vẫn cho ra một stack dùng
+# được ngay.
 #
-#   ./deploy/lab.sh up
+# Mọi biến đều có mặc định, nên chạy được với repo vừa clone và không có file .env.
+# Muốn cố định mật khẩu hoặc bật OpenCTI thì tạo .env ở gốc repo; xem .env.example.
+#
+# Ba khác biệt so với production (deploy/docker-compose/docker-compose.prod.yml):
+#
+#   1. nginx chạy TRONG container. Ở production nginx nằm trên host để chứng thư
+#      Let's Encrypt tách khỏi vòng đời container.
+#   2. Chứng thư TỰ KÝ, sinh tự động. Trình duyệt sẽ cảnh báo — đúng như mong đợi.
+#   3. Mỗi giao diện một cổng riêng thay vì phân biệt theo tên miền.
 
-name: cyberdns-tip-lab
+name: cyberdns-tip
 
 x-app: &app
-  image: cyberdns-tip:lab
+  image: cyberdns-tip:local
   build:
-    context: ../..
+    context: .
     dockerfile: Dockerfile
     args:
-      VERSION: lab
+      VERSION: ${VERSION:-local}
   environment: &app-env
-    TIP_ENV: lab
+    TIP_ENV: ${TIP_ENV:-lab}
     TIP_LOG_LEVEL: ${TIP_LOG_LEVEL:-info}
     TIP_DATABASE_DSN: postgres://tip:${POSTGRES_PASSWORD:-labpassword}@postgres:5432/tip?sslmode=disable
     TIP_SNAPSHOT_ROOT: /var/lib/cyberdns-tip/snapshots
@@ -32,9 +41,16 @@ x-app: &app
     TIP_INGEST_INTERVAL: ${TIP_INGEST_INTERVAL:-30m}
     TIP_POLICY_INTERVAL: ${TIP_POLICY_INTERVAL:-10m}
     TIP_BUILD_INTERVAL: ${TIP_BUILD_INTERVAL:-5m}
+    # Rỗng khi chưa bật OpenCTI. Đặt trong .env để nối vào cụm OpenCTI.
+    TIP_OPENCTI_URL: ${TIP_OPENCTI_URL:-}
+    TIP_OPENCTI_TOKEN: ${TIP_OPENCTI_TOKEN:-}
+    TIP_OPENCTI_STREAM_ID: ${TIP_OPENCTI_STREAM_ID:-}
+  # Mọi service ứng dụng chờ bootstrap chạy XONG, không chỉ chờ PostgreSQL sẵn sàng.
+  # Khởi động khi lược đồ chưa có sẽ cho ra một loạt container quay vòng lỗi và một
+  # nhật ký đầy lỗi SQL không nói lên nguyên nhân thật.
   depends_on:
-    postgres:
-      condition: service_healthy
+    bootstrap:
+      condition: service_completed_successfully
   restart: unless-stopped
 
 services:
@@ -47,7 +63,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     ports:
-      # Mở ra loopback của host để soi CSDL bằng psql khi cần. An toàn trong lab,
+      # Chỉ loopback của host, để soi CSDL bằng psql khi cần. An toàn trong lab,
       # KHÔNG làm thế ở production.
       - "127.0.0.1:${LAB_POSTGRES_PORT:-55433}:5432"
     healthcheck:
@@ -55,6 +71,26 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    restart: unless-stopped
+
+  # Đưa CSDL trắng về trạng thái chạy được rồi thoát: migration, tài khoản quản trị,
+  # bật nguồn OpenCTI nếu đã cấu hình. Cả ba đều idempotent.
+  #
+  # Mật khẩu quản trị: đặt TIP_ADMIN_PASSWORD trong .env để nó ổn định qua các lần
+  # dựng lại. Không đặt thì bootstrap sinh ngẫu nhiên và IN RA nhật ký của chính nó —
+  # đọc bằng "docker compose logs bootstrap".
+  bootstrap:
+    <<: *app
+    command: ["/usr/local/bin/bootstrap", "-config", "/etc/cyberdns-tip/configs/bootstrap.yaml"]
+    environment:
+      <<: *app-env
+      TIP_ADMIN_EMAIL: ${TIP_ADMIN_EMAIL:-admin@vnnic.vn}
+      TIP_ADMIN_PASSWORD: ${TIP_ADMIN_PASSWORD:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Chạy một lần rồi thoát. "unless-stopped" ở đây sẽ khiến nó chạy lại vô hạn.
+    restart: "no"
 
   feed-ingestor:
     <<: *app
@@ -91,7 +127,7 @@ services:
       <<: *app-env
       TIP_OPS_ADDR: "0.0.0.0:9103"
       TIP_PUBLIC_ADDR: "0.0.0.0:8080"
-      TIP_PUBLIC_BASE_URL: "https://localhost"
+      TIP_PUBLIC_BASE_URL: ${TIP_PUBLIC_BASE_URL:-https://localhost}
     volumes:
       - snapshot-data:/var/lib/cyberdns-tip/snapshots
     healthcheck:
@@ -123,27 +159,21 @@ services:
   # Nghe OpenCTI Live Stream và ghi kết quả xuống L1.
   #
   # Khởi động được cả khi CHƯA bật OpenCTI: thiếu url hoặc token thì service đứng yên
-  # và vẫn trả /healthz. OpenCTI là thành phần tùy chọn, nên thoát vì thiếu cấu hình sẽ
-  # khiến container quay vòng khởi động lại mãi và làm nhiễu mọi dashboard, trong khi
-  # phần còn lại của hệ vẫn chạy hoàn toàn bình thường.
+  # và vẫn trả /healthz. Nguồn chưa bật thì nó thử lại mỗi 30 giây. Thoát vì thiếu cấu
+  # hình sẽ khiến container quay vòng khởi động lại mãi và làm nhiễu mọi dashboard,
+  # trong khi phần còn lại của hệ vẫn chạy hoàn toàn bình thường.
   sync-consumer:
     <<: *app
     command: ["/usr/local/bin/sync-consumer", "-config", "/etc/cyberdns-tip/configs/sync-consumer.yaml"]
     environment:
       <<: *app-env
       TIP_OPS_ADDR: "0.0.0.0:9105"
-      # Rỗng khi chưa bật OpenCTI. Lớp phủ docker-compose.opencti.yml điền các giá trị
-      # thật khi cụm OpenCTI được khởi động.
-      TIP_OPENCTI_URL: ${TIP_OPENCTI_URL:-}
-      TIP_OPENCTI_TOKEN: ${OPENCTI_ADMIN_TOKEN:-}
-      TIP_OPENCTI_STREAM_ID: ${TIP_OPENCTI_STREAM_ID:-}
     healthcheck:
       test: ["CMD", "/usr/local/bin/healthcheck", "http://127.0.0.1:9105/healthz"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
-
 
   # Sinh chứng thư tự ký một lần rồi giữ lại trong volume.
   #
@@ -159,7 +189,7 @@ services:
         if [ ! -f /certs/lab.crt ]; then
           openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
             -keyout /certs/lab.key -out /certs/lab.crt \
-            -subj "/CN=cyberdns-tip-lab" \
+            -subj "/CN=cyberdns-tip" \
             -addext "subjectAltName=DNS:localhost,DNS:tip.cyberdns.vn,IP:127.0.0.1"
           chmod 644 /certs/lab.key /certs/lab.crt
         fi
@@ -178,7 +208,7 @@ services:
       - "${LAB_ADMIN_PORT:-9443}:9443"      # dashboard quản trị
       - "${LAB_OPENCTI_PORT:-10443}:10443"  # OpenCTI (502 khi chưa bật)
     volumes:
-      - ./lab-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/docker-compose/lab-nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - certs:/etc/nginx/certs:ro
     depends_on:
       certgen:

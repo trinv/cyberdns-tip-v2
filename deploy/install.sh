@@ -332,6 +332,11 @@ setup_env() {
 # Sinh tự động bởi deploy/install.sh lúc $(date -Is)
 POSTGRES_PASSWORD=$(openssl rand -base64 32 | tr -d '\n/+=' | head -c 32)
 GRAFANA_PASSWORD=$(openssl rand -base64 24 | tr -d '\n/+=' | head -c 24)
+
+# Tài khoản quản trị đầu tiên, do service bootstrap tạo. Đặt sẵn ở đây để mật khẩu
+# ỔN ĐỊNH qua mỗi lần dựng lại, thay vì phải mò trong nhật ký.
+TIP_ADMIN_EMAIL=admin@vnnic.vn
+TIP_ADMIN_PASSWORD=$(openssl rand -base64 24 | tr -d '\n/+=' | head -c 24)
 VERSION=$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo dev)
 TIP_LOG_LEVEL=info
 EOF
@@ -357,13 +362,12 @@ start_stack() {
     done
     ok "PostgreSQL đã sẵn sàng"
 
-    info "chạy migration"
-    docker compose -f "$COMPOSE_FILE" run --rm feed-ingestor -migrate \
-        || die "migration thất bại"
-    ok "migration xong"
-
-    info "khởi động các service còn lại"
-    docker compose -f "$COMPOSE_FILE" up -d
+    # Không có bước migrate riêng: service "bootstrap" chạy migration và tạo tài khoản
+    # quản trị đầu tiên, còn mọi service khác chờ nó chạy XONG mới khởi động
+    # (service_completed_successfully). Nghĩa là khi lệnh dưới đây trả về thì lược đồ đã
+    # đúng phiên bản và đã có tài khoản để đăng nhập.
+    info "khởi động toàn bộ (bootstrap chạy migration trước)"
+    docker compose -f "$COMPOSE_FILE" up -d || die "khởi động thất bại"
     ok "stack đang chạy"
 }
 

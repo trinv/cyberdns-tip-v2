@@ -8,6 +8,13 @@ sudo ./deploy/install.sh --email admin@vnnic.vn   # stack chính, chạy trướ
 sudo ./deploy/install-opencti.sh
 ```
 
+Tài liệu này nói về **production**, nơi bí mật nằm ở hai file riêng:
+`deploy/docker-compose/.env` cho stack chính và `.env.opencti` cho cụm OpenCTI.
+
+Trong **lab** thì khác: mọi thứ nằm gọn trong một file `.env` ở gốc repo để
+`docker compose` chạy trần được — nó chỉ tự nạp đúng một file `.env`. Xem
+[../LAB.md](../LAB.md).
+
 ## Trạng thái tích hợp
 
 Chiều **OpenCTI → blocklist** đã thông. Chiều ngược lại chưa:

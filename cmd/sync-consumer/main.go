@@ -79,14 +79,12 @@ func run(ctx context.Context, svc *app.Service, db *store.Store, cfg config.Open
 		return nil
 	}
 
-	src, err := findSource(ctx, db, cfg.SourceName)
+	src, err := awaitSource(ctx, svc, db, cfg.SourceName)
 	if err != nil {
-		// Nguồn tắt là lựa chọn có chủ đích của người vận hành (migration seed nó ở
-		// trạng thái tắt chờ duyệt license), không phải sự cố.
-		svc.Log.Warn("chưa bật nguồn OpenCTI, sync-consumer đứng yên",
-			"source", cfg.SourceName, "err", err)
-		<-ctx.Done()
-		return nil
+		return err
+	}
+	if src.ID == 0 {
+		return nil // ctx bị hủy trong lúc chờ
 	}
 	if src.Origin != "opencti" {
 		return fmt.Errorf("nguồn %q có origin=%q, phải là 'opencti': "+
@@ -159,6 +157,43 @@ func streamConfig(cfg config.OpenCTI) (opencti.StreamConfig, error) {
 		// được đây, và domain đó bị chặn mãi mà không ai gỡ được từ OpenCTI.
 		ListenDelete: true,
 	}, nil
+}
+
+// awaitSource chờ tới khi nguồn OpenCTI được bật.
+//
+// Thử lại thay vì đứng yên vĩnh viễn. Nguồn được seed ở trạng thái tắt, và người vận
+// hành có thể bật nó trên dashboard bất cứ lúc nào — bắt họ khởi động lại container để
+// thay đổi đó có hiệu lực là một cái bẫy im lặng: dashboard báo nguồn đã bật, mà không
+// có gì chảy vào, và không thông báo nào giải thích tại sao.
+//
+// Trả về Source rỗng khi ctx bị hủy.
+func awaitSource(ctx context.Context, svc *app.Service, db *store.Store, name string) (store.Source, error) {
+	const retry = 30 * time.Second
+
+	for attempt := 0; ; attempt++ {
+		src, err := findSource(ctx, db, name)
+		if err == nil {
+			return src, nil
+		}
+		if ctx.Err() != nil {
+			return store.Source{}, nil
+		}
+
+		// Chỉ báo ở lần đầu rồi thưa dần: một dòng cảnh báo mỗi 30 giây suốt nhiều ngày
+		// sẽ chôn vùi mọi thứ khác trong nhật ký.
+		if attempt == 0 || attempt%20 == 0 {
+			svc.Log.Warn("chưa bật nguồn OpenCTI, sẽ thử lại",
+				"source", name, "retry", retry, "err", err)
+		}
+
+		t := time.NewTimer(retry)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return store.Source{}, nil
+		case <-t.C:
+		}
+	}
 }
 
 // findSource tìm nguồn OpenCTI đang bật theo tên.
