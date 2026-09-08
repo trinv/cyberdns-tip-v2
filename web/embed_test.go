@@ -3,6 +3,9 @@ package web
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -126,5 +129,60 @@ func TestETagIsContentBased(t *testing.T) {
 	Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotModified {
 		t.Errorf("request có điều kiện = %d, muốn 304", rec.Code)
+	}
+}
+
+// Giao diện phải PHÂN TÍCH được, không chỉ được phục vụ.
+//
+// Một lỗi cú pháp trong app.js khiến trình duyệt không chạy dòng nào, và vì cả hai khối
+// #login và #app đều bắt đầu ở trạng thái hidden, kết quả là một TRANG TRẮNG hoàn toàn
+// — không thông báo, không dấu hiệu gì. Bộ test trước chỉ khẳng định file được phục vụ
+// đúng Content-Type nên hoàn toàn im lặng trước lỗi đó, và nó đã lọt ra tới người dùng.
+//
+// Bỏ qua khi máy không có Node; CI luôn có.
+func TestJavaScriptParses(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("bỏ qua: không có node trên PATH")
+	}
+
+	dir, err := os.MkdirTemp("", "tip-web-*")
+	if err != nil {
+		t.Fatalf("tạo thư mục tạm: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	src, err := files.ReadFile("app.js")
+	if err != nil {
+		t.Fatalf("đọc app.js: %v", err)
+	}
+	path := filepath.Join(dir, "app.js")
+	if err := os.WriteFile(path, src, 0o600); err != nil {
+		t.Fatalf("ghi file tạm: %v", err)
+	}
+
+	out, err := exec.Command(node, "--check", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("app.js không phân tích được:\n%s", out)
+	}
+}
+
+// index.html phải tham chiếu đúng những tài nguyên mà Handler thực sự phục vụ.
+//
+// Một đường dẫn gõ sai ở đây cũng cho ra trang trắng y hệt, và cũng im lặng như vậy.
+func TestIndexReferencesServedAssets(t *testing.T) {
+	html := get(t, "/index.html").Body.String()
+
+	for _, ref := range []string{`href="/app.css"`, `src="/app.js"`} {
+		if !strings.Contains(html, ref) {
+			t.Errorf("index.html thiếu %s", ref)
+		}
+	}
+
+	// Và những đường dẫn đó phải trả về 200 thật.
+	for _, path := range []string{"/app.css", "/app.js"} {
+		if rec := get(t, path); rec.Code != http.StatusOK {
+			t.Errorf("%s = %d, muốn 200", path, rec.Code)
+		}
 	}
 }

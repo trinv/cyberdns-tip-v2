@@ -84,6 +84,19 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
       - run: go build -trimpath -o /dev/null ./cmd/${{ matrix.service }}
 
+  # Giao diện phải phân tích được, không chỉ được phục vụ. Một lỗi cú pháp trong
+  # app.js cho ra trang trắng hoàn toàn, không thông báo gì — kiểu hỏng im lặng nhất
+  # có thể có.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Cú pháp JavaScript
+        run: node --check web/app.js
+
   shell:
     runs-on: ubuntu-latest
     steps:

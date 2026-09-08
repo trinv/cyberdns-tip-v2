@@ -467,7 +467,7 @@ async function renderAllowlist(view) {
               route();
             } catch (err) { toast(err.message, "bad"); }
           },
-        }, "Gỡ")));
+        }, "Gỡ"))));
 
   const domain = el("input", { type: "text", placeholder: "example.com" });
   const mt = el("select", {}, el("option", { value: "0" }, "exact"), el("option", { value: "1" }, "wildcard"));
